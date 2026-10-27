@@ -402,8 +402,21 @@ class OceanBaseMemoryVectorIndex:
         profile: EmbeddingProfile,
         /,
     ) -> bool:
+        return await self.complete_count(connection, scope_id, memories, profile) is not None
+
+    async def complete_count(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        memories: tuple[ArtifactRef, ...],
+        profile: EmbeddingProfile,
+        /,
+    ) -> int | None:
+        """Validate current vector metadata and return the active projection size."""
+
         if profile != self.profile:
-            return False
+            return None
+        count = 0
         for memory in memories:
             current = await connection.scalar(
                 select(ARTIFACT_HEADS_TABLE.c.revision).where(
@@ -444,10 +457,11 @@ class OceanBaseMemoryVectorIndex:
             expected = {(str(row[0]), str(row[1]), str(row[2])) for row in heads}
             actual = {(str(row[0]), str(row[1]), str(row[2])) for row in metadata}
             if actual != expected:
-                return False
+                return None
             if any(str(row[3]) != _embedding_hash(self.profile, str(row[2])) for row in metadata):
-                return False
-        return True
+                return None
+            count += len(heads)
+        return count
 
     async def hydrate(
         self,
