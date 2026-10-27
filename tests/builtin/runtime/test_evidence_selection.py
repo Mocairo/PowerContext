@@ -208,3 +208,12 @@ def test_query_word_order_distinguishes_equal_term_coverage():
     result = _build(groups, query="sensor opens", budget=700)
     _check(result, groups, 700)
     assert "The sensor opens before the valve." in result.fragments[0].text
+
+
+def test_unspaced_cjk_query_selects_late_evidence_instead_of_unrelated_prefix():
+    text = "无关行政记录。" * 200 + "海洋观测站点测得温度为37度。"
+    groups = (_group("one", text),)
+    result = _build(groups, query="海洋观测", budget=700)
+    _check(result, groups, 700)
+    assert any("海洋观测站点测得温度为37度。" in fragment.text for fragment in result.fragments)
+    assert result.fragments[0].start >= len("无关行政记录。") * 200

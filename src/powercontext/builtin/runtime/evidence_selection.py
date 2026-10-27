@@ -26,7 +26,9 @@ from itertools import pairwise
 from powercontext.artifacts import ArtifactAddress
 from powercontext.builtin.runtime.prepared_text import TRUST_POLICY
 
-_WORD = re.compile(r"[^\W_]+", re.UNICODE)
+# Han text does not require spaces between words; character tokens also expose
+# adjacent query pairs without changing any source character offsets.
+_WORD = re.compile(r"[\u3400-\u9fff]|[^\W_\u3400-\u9fff]+", re.UNICODE)
 _BOUNDARY = re.compile(r"[.!?]+[\"'”’)]*(?=\s|$)|[。！？]+[\"'”’)]*|\n+")  # noqa: RUF001
 _SECTION = re.compile(
     r"\b(BACKGROUND|OBJECTIVE|OBJECTIVES|METHODS|RESULTS|CONCLUSION|CONCLUSIONS|FINDINGS|INTERPRETATION)\b"
