@@ -16,14 +16,41 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence, ArtifactProcessingLeaseRepository
-from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE, SOURCES_TABLE
+
+
+async def source_count_ready(
+    connection: AsyncConnection,
+    binding_name: str,
+    scope_ids: tuple[str, ...],
+    threshold: int,
+) -> frozenset[str]:
+    """Count persisted journal identities after each Scope's successful cursor.
+
+    Eligibility is deliberately not filtered here: lineage-only Sources are
+    journal input too. Read neither payloads nor generation projections.
+    """
+    if not scope_ids:
+        return frozenset()
+    cursors = await SourceCursorRepository().load_many(connection, scope_ids, binding_name)
+    positions = {scope: cursor.cursor.sequence for scope, cursor in cursors.items()}
+    table = SOURCES_TABLE
+    after = case(positions, value=table.c.scope_id, else_=0) if positions else 0
+    rows = await connection.execute(
+        select(table.c.scope_id, func.count())
+        .where(table.c.scope_id.in_(scope_ids), table.c.journal_position > after)
+        .group_by(table.c.scope_id)
+    )
+    # RuntimeConfig permits arbitrary positive Python integers; comparing the
+    # bounded page here avoids overflowing SQLite's signed integer parameters.
+    return frozenset(scope for scope, count in rows if count >= threshold)
 
 
 async def enabled_profile_scopes(connection: AsyncConnection, scope_ids: tuple[str, ...]) -> frozenset[str]:
