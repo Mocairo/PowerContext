@@ -28,6 +28,11 @@ from powercontext.builtin.artifacts.memory.models import MemoryCitation, MemoryH
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
+from powercontext.builtin.runtime.evidence_selection import (
+    MemoryEntryAddress,
+    PreparedMemoryFragment,
+    select_evidence,
+)
 from powercontext.builtin.runtime.models import PrepareContextRequest, PreparedContext
 from powercontext.builtin.runtime.prepared_code import (
     CodeEvidenceRef,
@@ -106,15 +111,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
-
-
-@dataclass(frozen=True)
-class MemoryEntryAddress:
-    """Identify one exact Memory entry version across Scope boundaries."""
-
-    memory: ArtifactAddress
-    entry_id: str
-    entry_version_id: str
+    fragments: tuple[PreparedMemoryFragment, ...] = ()
 
 
 PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
@@ -211,6 +208,8 @@ class PreparedContextBuilder:
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
         code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
+        if request.evidence_selection:
+            return self._build_evidence(request, memory_candidates)
         if request.include_code:
 
             def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
@@ -277,14 +276,18 @@ class PreparedContextBuilder:
         counters because both go through :meth:`_select_entries`.
         """
 
-        content, origins, omissions = self._select_entries(
-            request=request,
-            current_scope_id=current_scope_id,
-            memory_candidates=memory_candidates,
-            experience_candidates=experience_candidates,
-            profile_candidates=profile_candidates,
-            topic_memory_hits=topic_memory_hits,
-        )
+        if request.evidence_selection:
+            build = self._build_evidence(request, memory_candidates)
+            content, origins, omissions = build.context.content, build.origins, build.omissions
+        else:
+            content, origins, omissions = self._select_entries(
+                request=request,
+                current_scope_id=current_scope_id,
+                memory_candidates=memory_candidates,
+                experience_candidates=experience_candidates,
+                profile_candidates=profile_candidates,
+                topic_memory_hits=topic_memory_hits,
+            )
         content_bytes = 0 if content is None else len(content.encode("utf-8"))
         return RecallBudgetView(
             max_bytes=request.max_bytes,
@@ -292,6 +295,32 @@ class PreparedContextBuilder:
             truncated_items=omissions.truncated_items,
             dropped_items=omissions.dropped_items,
             unused_bytes=max(0, request.max_bytes - content_bytes),
+        )
+
+    def _build_evidence(
+        self, request: PrepareContextRequest, candidates: Sequence[PreparedMemoryCandidates]
+    ) -> PreparedContextBuild:
+        if sum(len(group.hits) for group in candidates) > self.memory_candidate_limit:
+            raise PreparedContextInvariantError("memory-candidate-limit")
+        documents: list[tuple[MemoryEntryAddress, str]] = []
+        for group in candidates:
+            # Keep the same revision and identity checks as ordinary preparation.
+            for entry in self._memory_entries(group.memory_ref, group.hits, scope_id=group.scope_id):
+                if not isinstance(entry.origin, MemoryEntryAddress):
+                    raise PreparedContextInvariantError("evidence-scope-missing")
+                if not any(address == entry.origin for address, _ in documents):
+                    documents.append((entry.origin, entry.content))
+        content, fragments = select_evidence(request.query, documents, request.max_bytes)
+        omitted = sum(not any(fragment.address == address for fragment in fragments) for address, _ in documents)
+        return PreparedContextBuild(
+            context=(
+                self.empty()
+                if content is None
+                else PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8")))
+            ),
+            origins=tuple(fragment.address for fragment in fragments),
+            fragments=fragments,
+            omissions=PreparedContextOmissions(dropped_items=omitted, dropped_no_fitting_truncation=omitted),
         )
 
     def _select_entries(
