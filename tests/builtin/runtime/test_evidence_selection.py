@@ -172,3 +172,29 @@ def test_default_and_explicitly_disabled_prepare_are_identical():
     for invalid in (1, 0, "true", None):
         with pytest.raises(ValidationError):
             PrepareContextRequest.model_validate({"query": "test", "evidence_selection": invalid})
+
+
+def test_relevant_long_sentence_is_not_lost_to_short_unrelated_sentence():
+    text = "Administrative note. " + "unrelated " * 200 + "cobalt sensor pressure is 37 " + "reading " * 200
+    groups = (_group("one", text),)
+    result = _build(groups, budget=850)
+    _check(result, groups, 850)
+    assert any("cobalt sensor pressure is 37" in fragment.text for fragment in result.fragments)
+
+
+def test_original_sentence_whitespace_is_part_of_evidence_interval():
+    evidence = "  Cobalt sensor pressure is 37.  \n "
+    text = "Background note. " + evidence + "Administrative metadata " * 200
+    groups = (_group("one", text),)
+    result = _build(groups, budget=750)
+    start = text.index(evidence)
+    assert any(fragment.start <= start and fragment.end >= start + len(evidence) for fragment in result.fragments)
+    _check(result, groups, 750)
+
+
+def test_long_query_inflections_match_original_text_without_rewriting():
+    text = "Administrative note. " * 80 + "Discontinuation takes effect tomorrow."
+    groups = (_group("one", text),)
+    result = _build(groups, query="discontinue", budget=750)
+    _check(result, groups, 750)
+    assert any("Discontinuation takes effect tomorrow." in fragment.text for fragment in result.fragments)

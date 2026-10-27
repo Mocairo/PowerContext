@@ -27,6 +27,12 @@ from powercontext.builtin.runtime.prepared_text import TRUST_POLICY
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _BOUNDARY = re.compile(r"[.!?]+[\"'”’)]*(?=\s|$)|[。！？]+[\"'”’)]*|\n+")  # noqa: RUF001
+_SECTION = re.compile(
+    r"\b(BACKGROUND|OBJECTIVE|OBJECTIVES|METHODS|RESULTS|CONCLUSION|CONCLUSIONS|FINDINGS|INTERPRETATION)\b"
+)
+_ASSERTION = re.compile(
+    r"\b(?:we (?:found|show|demonstrate)|our results|these findings|in conclusion)\b", re.IGNORECASE
+)
 _STOP_WORDS = frozenset([
     "a",
     "an",
@@ -148,6 +154,25 @@ def _sentences(text: str) -> list[tuple[int, int]]:
     return expanded
 
 
+def _coverage(words: set[str], weights: dict[str, float]) -> float:
+    def related(left: str, right: str) -> bool:
+        if min(len(left), len(right)) < 5:
+            return False
+        common = 0
+        for first, second in zip(left, right, strict=False):
+            if first != second:
+                break
+            common += 1
+        return common >= 5 and common >= 0.75 * max(len(left), len(right))
+
+    # Conservative shared stems cover longer inflections the small suffix normalizer
+    # misses. Exact terms remain stronger; short technical identifiers are not fuzzed.
+    return sum(
+        weight if term in words else 0.8 * weight if any(related(term, word) for word in words) else 0.0
+        for term, weight in weights.items()
+    )
+
+
 def _rank(query: str, texts: Sequence[str]) -> list[_Span]:
     query_words = set(_tokens(query)) - _STOP_WORDS
     if not query_words:
@@ -155,18 +180,26 @@ def _rank(query: str, texts: Sequence[str]) -> list[_Span]:
     document_words = [set(_tokens(text)) for text in texts]
     weights = {
         word: 1.0 + math.log((len(texts) + 1) / (1 + sum(word in words for words in document_words)))
-        for word in query_words
+        for word in sorted(query_words)
     }
     total = sum(weights.values()) or 1.0
     spans = []
     for document, text in enumerate(texts):
-        document_match = sum(weights[word] for word in query_words & document_words[document]) / total
+        document_match = _coverage(document_words[document], weights) / total
+        section_weight = 1.0
         for start, end in _sentences(text):
-            words = _tokens(text[start:end])
-            overlap = sum(weights[word] for word in query_words & set(words)) / total
+            sentence = text[start:end]
+            headers = _SECTION.findall(sentence)
+            if headers:
+                section_weight = 0.75 if headers[-1] in {"BACKGROUND", "OBJECTIVE", "OBJECTIVES", "METHODS"} else 1.2
+            words = _tokens(sentence)
+            overlap = _coverage(set(words), weights) / total
             # Coverage does not reward repeated query words. The packing step charges
             # actual bytes, so evidence is not penalized a second time for its length.
-            score = (overlap + 0.05 * document_match) * (1.0 + document_match)
+            # Explicit discourse markers help distinguish a question or method from
+            # its reported findings without inventing content or reading labels.
+            assertion_weight = 1.15 if _ASSERTION.search(sentence) else 1.0
+            score = (overlap + 0.05 * document_match) * (1.0 + document_match) * section_weight * assertion_weight
             spans.append(_Span(document, start, end, score))
     return sorted(spans, key=lambda span: (-span.score, span.document, span.start))
 
@@ -221,7 +254,8 @@ def select_evidence(
     """Select whole sentences, merging neighbours to amortize exact citation costs.
 
     Every fit is measured using the actual JSON and envelope, including Unicode and
-    escaping. Only when no complete sentence fits do we consider a literal query window.
+    escaping. A literal query window also handles a strong sentence that cannot fit;
+    short but irrelevant sentences must not hide that evidence.
     """
     texts = [text for _, text in documents]
     remaining = _rank(query, texts)
@@ -230,6 +264,7 @@ def select_evidence(
     fragments: tuple[PreparedMemoryFragment, ...] = ()
     while remaining:
         best = None
+        fitting_score = 0.0
         for index, span in enumerate(remaining):
             candidate = _merge((*selected, span), texts)
             candidate_fragments = _fragments(candidate, documents)
@@ -237,12 +272,17 @@ def select_evidence(
             cost = len(rendered.encode("utf-8"))
             if cost > max_bytes:
                 continue
+            fitting_score = max(fitting_score, span.score)
             # Adjacent evidence can reuse a citation. Select by marginal relevance per
             # byte, with a sublinear cost penalty so tiny sentences do not dominate.
             added = max(1, cost - (len(content.encode("utf-8")) if content is not None else 0))
             value = (span.score + 0.001) / added**0.35
             if best is None or value > best[0]:
                 best = (value, index, candidate, candidate_fragments, rendered)
+        if not selected and fitting_score < remaining[0].score / 2:
+            window = _fit_window(query, remaining[:1], documents, max_bytes)
+            if window[1]:
+                return window
         if best is None:
             break
         _, index, selected, fragments, content = best
@@ -255,13 +295,13 @@ def select_evidence(
 def _fit_window(
     query: str, spans: Sequence[_Span], documents: Sequence[tuple[MemoryEntryAddress, str]], max_bytes: int
 ) -> tuple[str | None, tuple[PreparedMemoryFragment, ...]]:
-    query_words = set(_tokens(query)) - _STOP_WORDS
+    query_weights = dict.fromkeys(sorted(set(_tokens(query))), 1.0)
     for span in spans:
         text = documents[span.document][1]
         matches = [
             match
             for match in _WORD.finditer(text, span.start, span.end)
-            if query_words.intersection(_tokens(match.group()))
+            if _coverage(set(_tokens(match.group())), query_weights)
         ]
         center = matches[0].start() if matches else span.start
         lower, upper = 1, span.end - span.start

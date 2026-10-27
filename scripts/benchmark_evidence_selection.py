@@ -89,6 +89,7 @@ async def run(args):
     rows = []
     examined = skipped = 0
     async with open_builtin_runtime(BuiltinConfig(), candidate_pipeline=LiteralPipeline()) as runtime:
+        assert runtime.scopes is not None  # noqa: S101
         for claim in claims:
             if len(claim["evidence"]) != 1:
                 continue
@@ -124,6 +125,7 @@ async def run(args):
             while (await memory.flush()).processed:
                 pass
             page = await memory.list()
+            assert page.memory_ref is not None  # noqa: S101
             by_text = {record.entry.text: record for record in page.entries}
             gold_record = by_text[texts[gold_id]]
             intervals = ranges(
