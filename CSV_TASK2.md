@@ -8,7 +8,7 @@
 
 基于 `2026-competition` 的 `dab240063bfcfa7917898dc44da4baadb3747bd0`，保留冻结基线 `9db1753434162c0aa7c9f1189a1722e617880a52` 的完整祖先关系。
 
-平台提交格式是**产品仓库 HTTPS URL、实际分支、完整 40 位 commit SHA**，不是上传单独的 Python 文件。已配置的仓库 URL 为 `https://github.com/Mocairo/powercontext.git`；交付的独立分支为 `codex/csv-row-evidence`。以交付目录的 `submission.json` 为准，确认 `remote_verified` 后再向平台填写其中的 SHA。本地 commit 尚未推送时，平台无法获取。
+平台提交格式是**产品仓库 HTTPS URL、实际分支、完整 40 位 commit SHA**，不是上传单独的 Python 文件。已配置的仓库 URL 为 `https://github.com/Mocairo/powercontext.git`；交付的独立分支为 `csv-row-evidence`。以交付目录的 `submission.json` 为准，确认 `remote_verified` 后再向平台填写其中的 SHA。本地 commit 尚未推送时，平台无法获取。
 
 ## 规则依据与差异
 
