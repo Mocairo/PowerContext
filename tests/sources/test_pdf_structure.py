@@ -6,7 +6,7 @@ import io
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
+from pypdf.generic import DictionaryObject, NameObject
 
 from powercontext.sources.pdf_pages import PDFDocumentInput, parse_pdf_document
 from tests.pdf_test_support import pdf_bytes
@@ -17,6 +17,7 @@ def test_valid_indirect_page_tree_objects(indirect_key):
     writer = PdfWriter()
     writer.append(PdfReader(io.BytesIO(pdf_bytes(("Complete source text 123", "")))))
     tree = writer.root_object["/Pages"]
+    assert isinstance(tree, DictionaryObject)
     tree[NameObject(indirect_key)] = writer._add_object(tree[indirect_key])
     stream = io.BytesIO()
     writer.write(stream)

@@ -87,6 +87,6 @@ env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u http
 
 最终 `make -C competition test` 退出 0，全部 **95 passed、0 failed、0 skipped**：CSV 17、Pi 15、PDF 6、重排 10、增量 14、数量触发 17、embedding 8、生命周期 4、证据选择 3、混合检索 1。`check-baseline` 退出 0。
 
-新增 42 项测试、相关 Source/Memory 147 项回归均通过。最后的测试类型标注修正后，受影响的 10 项检索单测和 3 项入库/质量测试再次通过，产品源码哈希保持不变。附加容器以断网、1 CPU、2 GiB、512 pids、非 root、源码只读执行 PDF 官方 6 项和新增 42 项，均通过；镜像为固定摘要的 Debian Python 3.12，**不是官方 CentOS 镜像**，不能作为官方平台评分。
+新增 42 项测试、相关 Source/Memory 147 项回归均通过。最后的测试类型标注修正后，受影响的 26 项解析/结构单测、10 项检索单测和 3 项入库/质量测试再次通过，产品源码哈希保持不变。附加容器以断网、1 CPU、2 GiB、512 pids、非 root、源码只读执行 PDF 官方 6 项和新增 42 项，均通过；镜像为固定摘要的 Debian Python 3.12，**不是官方 CentOS 镜像**，不能作为官方平台评分。
 
-产品四个变更文件 Ruff、格式和固定依赖环境 ty 检查通过。仓库全量 precommit 在独立临时副本执行，既有 competition 格式和基线类型问题另有原始日志与对照；没有将全量自动格式化修改带回产品。
+产品四个变更文件 Ruff、格式和固定依赖环境 ty 检查通过。仓库全量 precommit 在独立临时副本执行，既有 competition 格式和基线类型问题导致退出 1；普通开发锁文件还未安装比赛固定的 pypdf。使用同一个 competition Python 环境进行全仓库类型对照，前置版本 363 条、本分支 361 条，新增诊断 0，消除原先两处缺少 PDF 模块的诊断。没有将全量自动格式化修改带回产品。

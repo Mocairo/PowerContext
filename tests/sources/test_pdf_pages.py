@@ -83,9 +83,13 @@ def test_invalid_later_page_contents_rejects_entire_document():
 def test_corrupt_form_object_does_not_silently_drop_final_page_evidence():
     writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes(("Valid first page", "Visible second page")))))
     page = writer.pages[1]
-    page[NameObject("/Resources")][NameObject("/XObject")] = DictionaryObject()
+    resources = page["/Resources"]
+    assert isinstance(resources, DictionaryObject)
+    resources[NameObject("/XObject")] = DictionaryObject()
+    original_contents = page.get_contents()
+    assert original_contents is not None
     contents = DecodedStreamObject()
-    contents.set_data(page.get_contents().get_data() + b"\n/MissingEvidence Do\n")
+    contents.set_data(original_contents.get_data() + b"\n/MissingEvidence Do\n")
     page[NameObject("/Contents")] = writer._add_object(contents)
     stream = io.BytesIO()
     writer.write(stream)
@@ -149,7 +153,9 @@ def test_definition_projection_roundtrip_and_revision_identity():
 @pytest.mark.parametrize("claimed_count", [0, 1, 3])
 def test_inconsistent_page_tree_count_is_rejected(claimed_count):
     writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes(("First", "Second")))))
-    writer._root_object["/Pages"][NameObject("/Count")] = NumberObject(claimed_count)
+    tree = writer.root_object["/Pages"]
+    assert isinstance(tree, DictionaryObject)
+    tree[NameObject("/Count")] = NumberObject(claimed_count)
     stream = io.BytesIO()
     writer.write(stream)
     with pytest.raises(ValueError):
@@ -162,7 +168,11 @@ def test_text_with_broken_resources_is_not_returned_as_blank_or_replacement_char
     if damage == "missing-resources":
         del writer.pages[1][NameObject("/Resources")]
     else:
-        writer.pages[1]["/Resources"]["/Font"][NameObject("/F1")] = NumberObject(42)
+        resources = writer.pages[1]["/Resources"]
+        assert isinstance(resources, DictionaryObject)
+        fonts = resources["/Font"]
+        assert isinstance(fonts, DictionaryObject)
+        fonts[NameObject("/F1")] = NumberObject(42)
     stream = io.BytesIO()
     writer.write(stream)
     with pytest.raises(ValueError):
@@ -180,9 +190,13 @@ def test_rotated_page_and_form_xobject_text_stay_on_their_physical_page():
         NameObject("/Resources"): page["/Resources"].clone(writer),
     })
     form.set_data(b"BT /F1 10 Tf 40 700 Td (Form evidence 345.67) Tj ET")
-    page["/Resources"][NameObject("/XObject")] = DictionaryObject({NameObject("/ReportForm"): writer._add_object(form)})
+    resources = page["/Resources"]
+    assert isinstance(resources, DictionaryObject)
+    resources[NameObject("/XObject")] = DictionaryObject({NameObject("/ReportForm"): writer._add_object(form)})
+    original_contents = page.get_contents()
+    assert original_contents is not None
     stream = DecodedStreamObject()
-    stream.set_data(page.get_contents().get_data() + b"\n/ReportForm Do\n")
+    stream.set_data(original_contents.get_data() + b"\n/ReportForm Do\n")
     page[NameObject("/Contents")] = writer._add_object(stream)
     page.rotate(90)
     output = io.BytesIO()
@@ -213,7 +227,13 @@ CMapName currentdict /CMap defineresource pop
 end
 end
 """)
-    writer.pages[0]["/Resources"]["/Font"]["/F1"][NameObject("/ToUnicode")] = writer._add_object(mapping)
+    resources = writer.pages[0]["/Resources"]
+    assert isinstance(resources, DictionaryObject)
+    fonts = resources["/Font"]
+    assert isinstance(fonts, DictionaryObject)
+    font = fonts["/F1"]
+    assert isinstance(font, DictionaryObject)
+    font[NameObject("/ToUnicode")] = writer._add_object(mapping)
     output = io.BytesIO()
     writer.write(output)
     pages = parse_pdf_document(PDFDocumentInput(document_id="unicode", content=output.getvalue()))
@@ -222,7 +242,9 @@ end
 
 def test_inherited_font_resources_remain_valid():
     writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes(("First inherited 123", "Second inherited 456")))))
-    writer._root_object["/Pages"][NameObject("/Resources")] = writer.pages[0]["/Resources"]
+    tree = writer.root_object["/Pages"]
+    assert isinstance(tree, DictionaryObject)
+    tree[NameObject("/Resources")] = writer.pages[0]["/Resources"]
     for page in writer.pages:
         del page[NameObject("/Resources")]
     output = io.BytesIO()
