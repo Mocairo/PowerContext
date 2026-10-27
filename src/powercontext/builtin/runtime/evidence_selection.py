@@ -21,6 +21,7 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from powercontext.artifacts import ArtifactAddress
 from powercontext.builtin.runtime.prepared_text import TRUST_POLICY
@@ -174,10 +175,11 @@ def _coverage(words: set[str], weights: dict[str, float]) -> float:
 
 
 def _rank(query: str, texts: Sequence[str]) -> list[_Span]:
-    query_words = set(_tokens(query)) - _STOP_WORDS
-    if not query_words:
-        query_words = set(_tokens(query))
-    document_words = [set(_tokens(text)) for text in texts]
+    query_tokens = _tokens(query)
+    query_words = set(query_tokens)
+    query_pairs = set(pairwise(query_tokens))
+    document_tokens = [_tokens(text) for text in texts]
+    document_words = [set(words) for words in document_tokens]
     weights = {
         word: 1.0 + math.log((len(texts) + 1) / (1 + sum(word in words for words in document_words)))
         for word in sorted(query_words)
@@ -186,6 +188,9 @@ def _rank(query: str, texts: Sequence[str]) -> list[_Span]:
     spans = []
     for document, text in enumerate(texts):
         document_match = _coverage(document_words[document], weights) / total
+        tokens = document_tokens[document]
+        document_pairs = set(pairwise(tokens))
+        document_phrase = len(query_pairs & document_pairs) / max(1, len(query_pairs))
         section_weight = 1.0
         for start, end in _sentences(text):
             sentence = text[start:end]
@@ -194,12 +199,21 @@ def _rank(query: str, texts: Sequence[str]) -> list[_Span]:
                 section_weight = 0.75 if headers[-1] in {"BACKGROUND", "OBJECTIVE", "OBJECTIVES", "METHODS"} else 1.2
             words = _tokens(sentence)
             overlap = _coverage(set(words), weights) / total
+            sentence_pairs = set(pairwise(words))
+            sentence_phrase = len(query_pairs & sentence_pairs) / max(1, len(query_pairs))
             # Coverage does not reward repeated query words. The packing step charges
             # actual bytes, so evidence is not penalized a second time for its length.
             # Explicit discourse markers help distinguish a question or method from
             # its reported findings without inventing content or reading labels.
             assertion_weight = 1.15 if _ASSERTION.search(sentence) else 1.0
-            score = (overlap + 0.05 * document_match) * (1.0 + document_match) * section_weight * assertion_weight
+            # Ordered query pairs distinguish phrases from accidental term overlap.
+            score = (
+                (overlap + 0.05 * document_match)
+                * (1.0 + document_match + 0.5 * document_phrase)
+                * (1.0 + 0.25 * sentence_phrase)
+                * section_weight
+                * assertion_weight
+            )
             spans.append(_Span(document, start, end, score))
     return sorted(spans, key=lambda span: (-span.score, span.document, span.start))
 

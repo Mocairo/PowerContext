@@ -198,3 +198,13 @@ def test_long_query_inflections_match_original_text_without_rewriting():
     result = _build(groups, query="discontinue", budget=750)
     _check(result, groups, 750)
     assert any("Discontinuation takes effect tomorrow." in fragment.text for fragment in result.fragments)
+
+
+def test_query_word_order_distinguishes_equal_term_coverage():
+    text = (
+        "The valve opens before the sensor. " + "Administrative details " * 200 + ". The sensor opens before the valve."
+    )
+    groups = (_group("one", text),)
+    result = _build(groups, query="sensor opens", budget=700)
+    _check(result, groups, 700)
+    assert "The sensor opens before the valve." in result.fragments[0].text
