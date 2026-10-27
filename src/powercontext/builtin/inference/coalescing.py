@@ -19,10 +19,13 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from powercontext.builtin.inference.models import EmbeddingResult, EmbeddingVector, InferenceUsage
-from powercontext.builtin.inference.protocols import EmbeddingModel
+from powercontext.builtin.inference.protocols import EmbeddingModel, QueryEmbeddingModel
+
+_EmbeddingKey = tuple[bool, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +70,25 @@ class CoalescingEmbeddingModel:
             raise ValueError("coalesce_ms")
         self.profile = model.profile
         self._model = model
+        self._query_model = model if isinstance(model, QueryEmbeddingModel) else None
         self._max_batch_size = max_batch_size
         self._delay = coalesce_ms / 1000
         self._cache_size = cache_size
-        self._cache: OrderedDict[str, EmbeddingVector] = OrderedDict()
-        self._inflight: dict[str, asyncio.Future[_EmbeddedText]] = {}
-        self._pending: dict[str, asyncio.Future[_EmbeddedText]] = {}
+        self._cache: OrderedDict[_EmbeddingKey, EmbeddingVector] = OrderedDict()
+        self._inflight: dict[_EmbeddingKey, asyncio.Future[_EmbeddedText]] = {}
+        self._pending: dict[_EmbeddingKey, asyncio.Future[_EmbeddedText]] = {}
         self._flush: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
         """Return vectors in input order, including repeated input positions."""
+        return await self._embed(texts, query=False)
+
+    async def embed_query(self, texts: tuple[str, ...], /) -> EmbeddingResult:
+        """Preserve asymmetric query embeddings without sharing document vectors."""
+        return await self._embed(texts, query=self._query_model is not None)
+
+    async def _embed(self, texts: tuple[str, ...], *, query: bool) -> EmbeddingResult:
         if not texts:
             return EmbeddingResult(vectors=())
         cached: dict[str, EmbeddingVector] = {}
@@ -86,15 +97,16 @@ class CoalescingEmbeddingModel:
         # No await occurs while registering work, so another caller sees all of
         # this call's outstanding texts before the provider can start.
         for text in texts:
-            if text in self._cache:
-                cached[text] = self._cache[text]
-                self._cache.move_to_end(text)
+            key = (query, text)
+            if key in self._cache:
+                cached[text] = self._cache[key]
+                self._cache.move_to_end(key)
             elif text not in waiting:
-                future = self._inflight.get(text)
+                future = self._inflight.get(key)
                 if future is None:
                     future = loop.create_future()
                     future.add_done_callback(_observe_failure)
-                    self._inflight[text] = self._pending[text] = future
+                    self._inflight[key] = self._pending[key] = future
                 waiting[text] = future
         if self._pending and self._flush is None:
             self._flush = loop.call_later(self._delay, self._dispatch)
@@ -117,15 +129,24 @@ class CoalescingEmbeddingModel:
         pending = tuple(self._pending.items())
         self._pending.clear()
         self._flush = None
-        for offset in range(0, len(pending), self._max_batch_size):
-            batch = pending[offset : offset + self._max_batch_size]
-            task = asyncio.create_task(self._run_batch(batch))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+        # The same text can have different vectors for documents and queries.
+        # Both namespaces share one bounded LRU, but never a provider batch.
+        for query in (False, True):
+            queue = tuple(item for item in pending if item[0][0] == query)
+            embed = self._query_model.embed_query if query and self._query_model is not None else self._model.embed
+            for offset in range(0, len(queue), self._max_batch_size):
+                batch = queue[offset : offset + self._max_batch_size]
+                task = asyncio.create_task(self._run_batch(batch, embed))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
-    async def _run_batch(self, batch: tuple[tuple[str, asyncio.Future[_EmbeddedText]], ...]) -> None:
+    async def _run_batch(
+        self,
+        batch: tuple[tuple[_EmbeddingKey, asyncio.Future[_EmbeddedText]], ...],
+        embed: Callable[[tuple[str, ...]], Awaitable[EmbeddingResult]],
+    ) -> None:
         try:
-            result = await self._model.embed(tuple(text for text, _ in batch))
+            result = await embed(tuple(key[1] for key, _ in batch))
             if len(result.vectors) != len(batch):
                 raise ValueError("embedding-vector-count")  # noqa: TRY301 - fan out validation failures to all waiters
         except (Exception, asyncio.CancelledError) as error:
@@ -133,16 +154,16 @@ class CoalescingEmbeddingModel:
                 future.set_exception(error)
         else:
             batch_id = object()
-            for (text, future), vector in zip(batch, result.vectors, strict=True):
+            for (key, future), vector in zip(batch, result.vectors, strict=True):
                 if self._cache_size:
-                    self._cache[text] = vector
-                    self._cache.move_to_end(text)
+                    self._cache[key] = vector
+                    self._cache.move_to_end(key)
                     while len(self._cache) > self._cache_size:
                         self._cache.popitem(last=False)
                 future.set_result(_EmbeddedText(vector=vector, batch=batch_id, usage=result.usage))
         finally:
-            for text, _ in batch:
-                del self._inflight[text]
+            for key, _ in batch:
+                del self._inflight[key]
 
 
 __all__ = ["CoalescingEmbeddingModel"]

@@ -19,19 +19,23 @@ class ControlledEmbedding:
         self.calls: list[tuple[str, ...]] = []
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.finished = asyncio.Event()
         self.fail = False
         self.invalid = False
 
     async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
         self.calls.append(texts)
         self.started.set()
-        await self.release.wait()
-        if self.fail and "bad" in texts:
-            raise RuntimeError("unavailable")
-        return EmbeddingResult(
-            vectors=() if self.invalid else tuple((float(len(text)),) for text in texts),
-            usage=InferenceUsage(requests=3, input_tokens=len(texts) * 10, output_tokens=2),
-        )
+        try:
+            await self.release.wait()
+            if self.fail and "bad" in texts:
+                raise RuntimeError("unavailable")
+            return EmbeddingResult(
+                vectors=() if self.invalid else tuple((float(len(text)),) for text in texts),
+                usage=InferenceUsage(requests=3, input_tokens=len(texts) * 10, output_tokens=2),
+            )
+        finally:
+            self.finished.set()
 
 
 def test_late_waiter_shares_running_work_with_cache_disabled() -> None:
@@ -117,9 +121,11 @@ def test_cancelled_waiters_leave_no_unhandled_provider_exception() -> None:
                     for value in await asyncio.gather(*waiters, return_exceptions=True)
                 )
                 base.release.set()
-                # A new observer synchronizes with the abandoned provider batch.
-                with pytest.raises(RuntimeError, match="unavailable"):
-                    await model.embed(("bad",))
+                # Synchronize on provider completion without attaching another waiter.
+                await base.finished.wait()
+                await asyncio.sleep(0)
+                gc.collect()
+                assert errors == []
                 base.fail = False
                 assert (await model.embed(("bad",))).vectors == ((3.0,),)
                 del waiters, model
@@ -182,3 +188,93 @@ def test_invalid_batch_caches_no_vectors_and_can_be_retried() -> None:
 def test_invalid_configuration_fails_before_scheduling(options) -> None:
     with pytest.raises(ValueError):
         CoalescingEmbeddingModel(ControlledEmbedding(), **options)
+
+
+def test_provider_cancellation_is_local_to_its_batch_and_can_be_retried():
+    class Provider(ControlledEmbedding):
+        async def embed(self, texts, /):
+            if self.fail and "cancel" in texts:
+                raise asyncio.CancelledError
+            return await super().embed(texts)
+
+    async def run():
+        async with asyncio.timeout(3):
+            base = Provider()
+            base.release.set()
+            base.fail = True
+            model = CoalescingEmbeddingModel(base, max_batch_size=1, coalesce_ms=0)
+            failed, survived = await asyncio.gather(
+                model.embed(("cancel",)), model.embed(("ok",)), return_exceptions=True
+            )
+            assert isinstance(failed, asyncio.CancelledError)
+            assert isinstance(survived, EmbeddingResult) and survived.vectors == ((2.0,),)
+            base.fail = False
+            assert (await model.embed(("cancel",))).vectors == ((6.0,),)
+
+    asyncio.run(run())
+
+
+def test_asymmetric_queries_have_separate_vectors_but_share_the_cache_bound():
+    class Asymmetric(ControlledEmbedding):
+        def __init__(self):
+            super().__init__()
+            self.query_calls = []
+
+        async def embed_query(self, texts, /):
+            self.query_calls.append(texts)
+            return EmbeddingResult(
+                vectors=tuple((-float(len(text)),) for text in texts), usage=InferenceUsage(requests=2)
+            )
+
+    async def run():
+        async with asyncio.timeout(3):
+            base = Asymmetric()
+            base.release.set()
+            model = CoalescingEmbeddingModel(base, coalesce_ms=0, cache_size=1)
+            assert (await model.embed(("same",))).vectors == ((4.0,),)
+            first, second = await asyncio.gather(model.embed_query(("same", "same")), model.embed_query(("same",)))
+            assert first.vectors == ((-4.0,), (-4.0,))
+            assert second.vectors == ((-4.0,),)
+            assert first.usage.requests == second.usage.requests == 2
+            assert base.query_calls == [("same",)]
+            assert (await model.embed_query(("same",))).usage.requests == 0
+            # Query and document vectors together use one bounded cache.
+            assert (await model.embed(("same",))).usage.requests == 3
+            assert base.calls == [("same",), ("same",)]
+
+    asyncio.run(run())
+
+
+def test_asymmetric_wrapper_preserves_real_memory_query_semantics():
+    from powercontext.builtin.artifacts.memory import MemoryEntryInput
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+
+    class Asymmetric:
+        profile = EmbeddingProfile(profile_id="asymmetric-tests", model="offline", dimension=2)
+
+        async def embed(self, texts, /):
+            return EmbeddingResult(
+                vectors=tuple((0.0, 1.0) if text == "Beta document" else (1.0, 0.0) for text in texts)
+            )
+
+        async def embed_query(self, texts, /):
+            return EmbeddingResult(vectors=tuple((0.0, 1.0) for _ in texts))
+
+    async def run():
+        async with asyncio.timeout(10):
+            model = CoalescingEmbeddingModel(Asymmetric(), coalesce_ms=0)
+            async with open_builtin_contexts(BuiltinConfig(database=SQLiteConfig()), embedding_model=model) as contexts:
+                memory = (await contexts.get("asymmetric")).artifacts.memory
+                head = await memory.remember(
+                    memory=None,
+                    entries=tuple(
+                        MemoryEntryInput(kind="fact", text=text) for text in ("Alpha document", "Beta document")
+                    ),
+                    mode="append",
+                )
+                assert head is not None
+                result = await memory.search("find beta", memories=(head,), mode="vector", limit=1)
+                assert result.hits[0].text == "Beta document"
+
+    asyncio.run(run())
