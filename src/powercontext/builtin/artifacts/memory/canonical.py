@@ -27,6 +27,7 @@ import rfc8785
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from powercontext.builtin.artifacts.memory.models import MemoryContent
+from powercontext.limits import MAX_SOURCE_OBSERVATION_BYTES
 
 _ENTRY_HASH_DOMAIN = b"powercontext:entry-content:v1\0"
 _EMBEDDING_HASH_DOMAIN = b"powercontext:embedding-content:v1\0"
@@ -38,6 +39,7 @@ class _CanonicalValueError(ValueError):
         self.code = code
         messages = {
             "text-too-long": "memory entry text must not exceed 8192 UTF-8 bytes",
+            "pdf-text-too-long": f"PDF page text must not exceed {MAX_SOURCE_OBSERVATION_BYTES} UTF-8 bytes",
             "reason-too-long": "memory change reason must not exceed 512 Unicode code points",
             "identifier-empty": "memory identifiers must be non-empty strings",
             "identifier-ascii": "memory identifiers must contain only ASCII characters",
@@ -78,12 +80,21 @@ def canonical_json(value: object) -> bytes:
     return rfc8785.dumps(_validated_json(value))
 
 
-def normalize_text(value: str) -> str:
-    """Normalize and validate one durable entry body."""
+def normalize_text(value: str, *, source_refs: Sequence[object] = ()) -> str:
+    """Normalize a durable body, allowing captured PDF pages to remain whole.
+
+    Ordinary entries retain their existing bound. Page evidence is already
+    bounded during Source observation ingestion and must not be truncated into
+    an incomplete page merely to satisfy the ordinary Memory entry budget.
+    """
 
     normalized = _normalize_non_empty_string(value, "memory entry text")
-    if len(normalized.encode("utf-8")) > 8192:
-        raise _CanonicalValueError("text-too-long")
+    pdf_page = bool(source_refs) and all(
+        isinstance(ref, Mapping) and ref.get("source_type") == "pdf-page" for ref in source_refs
+    )
+    limit = MAX_SOURCE_OBSERVATION_BYTES if pdf_page else 8192
+    if len(normalized.encode("utf-8")) > limit:
+        raise _CanonicalValueError("pdf-text-too-long" if pdf_page else "text-too-long")
     return normalized
 
 
@@ -160,7 +171,7 @@ def entry_content_bytes(
 
     return canonical_json({
         "kind": normalize_kind(kind),
-        "text": normalize_text(text),
+        "text": normalize_text(text, source_refs=source_refs),
         "source_refs": normalize_refs(source_refs),
         "artifact_refs": normalize_refs(artifact_refs),
     })
