@@ -49,6 +49,7 @@ class LabRelayConfig(BaseModel):
     seekdb_database: str = "labrelay"
     seekdb_user: str = "root"
     seekdb_password: str = ""
+    seekdb_tenant: str = "sys"
 
 
 def _yaml_value(path: Path) -> dict[str, Any]:
@@ -85,12 +86,8 @@ def load_app_config(project_root: Path) -> LabRelayConfig:
         server=ServerConfig(**server),
         retrieval=RetrievalConfig(fusion=RetrievalConfig.Fusion(**retrieval_cfg)),
         planner=PlannerConfig(
-            environment_before_experiments=planner_cfg.get(
-                "environment_before_experiments", True
-            ),
-            every_task_requires_citation=planner_cfg.get(
-                "every_task_requires_citation", True
-            ),
+            environment_before_experiments=planner_cfg.get("environment_before_experiments", True),
+            every_task_requires_citation=planner_cfg.get("every_task_requires_citation", True),
         ),
         embedding=EmbeddingConfig(
             dimensions=int(dimensions) if dimensions and dimensions.isdigit() else None
@@ -108,4 +105,5 @@ def load_app_config(project_root: Path) -> LabRelayConfig:
         seekdb_database=os.getenv("SEEKDB_DATABASE", "labrelay"),
         seekdb_user=os.getenv("SEEKDB_USER", "root"),
         seekdb_password=os.getenv("SEEKDB_ROOT_PASSWORD", ""),
+        seekdb_tenant=os.getenv("SEEKDB_TENANT", "sys"),
     )

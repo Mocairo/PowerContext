@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE TABLE IF NOT EXISTS assets (
-  id VARCHAR(64) PRIMARY KEY,
+  id VARCHAR(64) NOT NULL,
+  seq BIGINT NOT NULL AUTO_INCREMENT,
   project_id VARCHAR(64) NOT NULL,
   kind VARCHAR(32) NOT NULL,
   title VARCHAR(512) NOT NULL,
@@ -19,6 +20,8 @@ CREATE TABLE IF NOT EXISTS assets (
   version VARCHAR(255) NULL,
   status VARCHAR(32) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_asset_seq (seq),
   UNIQUE KEY uq_asset_location (project_id, uri(191), checksum)
 );
 
@@ -52,18 +55,22 @@ CREATE TABLE IF NOT EXISTS tasks (
   estimated_minutes INT NOT NULL,
   position INT NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_tasks_plan (plan_id),
   INDEX idx_tasks_plan_position (plan_id, position)
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
-  id VARCHAR(64) PRIMARY KEY,
+  id VARCHAR(64) NOT NULL,
+  seq BIGINT NOT NULL AUTO_INCREMENT,
   project_id VARCHAR(64) NOT NULL,
   plan_id VARCHAR(64) NOT NULL,
   task_id VARCHAR(64) NOT NULL,
   event_type VARCHAR(64) NOT NULL,
   payload_json TEXT NOT NULL,
   occurred_at VARCHAR(64) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_seq (seq),
+  INDEX idx_events_project_seq (project_id, seq),
   INDEX idx_events_task (task_id)
 );

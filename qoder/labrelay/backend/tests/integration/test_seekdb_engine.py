@@ -27,6 +27,18 @@ def _config() -> LabRelayConfig:
         seekdb_database=os.getenv("SEEKDB_DATABASE", "labrelay"),
         seekdb_user=os.getenv("SEEKDB_USER", "root"),
         seekdb_password=os.getenv("SEEKDB_ROOT_PASSWORD", ""),
+        seekdb_tenant=os.getenv("SEEKDB_TENANT", "sys"),
+    )
+
+
+def _chunk(chunk_id: str, content: str) -> Chunk:
+    return Chunk(
+        id=chunk_id,
+        asset_id="asset-e2e",
+        ordinal=0,
+        content=content,
+        locator={"line_start": 1, "line_end": 3},
+        token_count=5,
     )
 
 
@@ -44,18 +56,33 @@ def test_upsert_and_hybrid_search() -> None:
         checksum="abc",
         status="active",
     )
-    chunk = Chunk(
-        id="asset-e2e:1",
-        asset_id=asset.id,
-        ordinal=0,
-        content="run baseline experiment",
-        locator={"line_start": 1, "line_end": 3},
-        token_count=5,
-    )
 
     async def run():
-        await engine.upsert_chunks([chunk], [asset])
-        return await engine.search("project-e2e", "baseline", ["code"], 5)
+        assert await engine.health_check() is True
+        await engine.initialize()
+        await engine.upsert_chunks([_chunk("asset-e2e:1", "run baseline experiment")], [asset])
+        # a re-import that drops one chunk must keep the surviving one and lose the stale one
+        await engine.upsert_chunks(
+            [
+                _chunk("asset-e2e:1", "run the baseline experiment again"),
+                _chunk("asset-e2e:2", "sweep the learning rate"),
+            ],
+            [asset],
+        )
+        await engine.upsert_chunks([_chunk("asset-e2e:2", "sweep the learning rate")], [asset])
+        hits = await engine.search("project-e2e", "baseline", ["code"], 5)
+        other_project = await engine.search("project-somebody-else", "baseline", ["code"], 5)
+        stale = await engine.search("project-e2e", "experiment", ["code"], 5)
+        await engine.close()
+        return hits, other_project, stale
 
-    hits = asyncio.run(run())
-    assert hits[0].citation.asset_id == "asset-e2e"
+    hits, other_project, stale = asyncio.run(run())
+
+    assert hits
+    assert {hit.citation.asset_id for hit in hits} == {"asset-e2e"}
+    assert hits[0].citation.title == "train.py"
+    assert hits[0].score >= hits[-1].score > 0
+    # the project predicate holds even when a caller asks for another project's evidence
+    assert other_project == []
+    # the chunk the last upsert dropped is no longer retrievable evidence
+    assert all(hit.citation.excerpt != "run baseline experiment" for hit in stale)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import anyio
@@ -22,9 +24,18 @@ from labrelay.domain.models import Asset, Chunk, Citation
 from labrelay.domain.ports import ModelGateway, SearchHit
 
 COLLECTION_NAME = "labrelay_chunks"
+DEFAULT_TENANT = "sys"
 ACTIVE_STATUS = "active"
+# These three mirror configs/retrieval.yaml; test_seekdb_engine_constants_match_retrieval_yaml
+# keeps the engine and the shipped config from drifting apart.
 MAX_EXCERPT_CHARACTERS = 700
 MAX_CHUNKS_PER_ASSET = 3
+MAX_CANDIDATES = 50
+# Reciprocal-rank fusion constant. The engine scores hits from their position in the
+# fused result list instead of pyseekdb's ``distances`` channel (see ``_to_relevance``).
+RRF_RANK_CONSTANT = 60
+CONNECT_TIMEOUT_SECONDS = 5
+READ_TIMEOUT_SECONDS = 10
 
 logger = logging.getLogger("labrelay.retrieval.seekdb")
 
@@ -80,8 +91,25 @@ def _collection_schema(embedding_function: SeekdbEmbeddingFunction) -> Schema:
     )
 
 
+def _close_client(client: Any) -> None:
+    """Release the pymysql connection behind a pyseekdb client proxy."""
+    cleanup = getattr(getattr(client, "_server", None), "_cleanup", None)
+    if not callable(cleanup):
+        return
+    try:
+        cleanup()
+    except Exception:  # pragma: no cover - closing must never mask the operation's result
+        logger.warning("seekdb client close failed", exc_info=True)
+
+
 class SeekdbSearchEngine:
-    """Project-scoped hybrid search backed by a seekdb collection."""
+    """Project-scoped hybrid search backed by a seekdb collection.
+
+    pyseekdb clients wrap a single pymysql connection, so one long-lived client cannot be
+    shared across concurrent coroutines. The engine holds only configuration: every
+    operation builds its own short-lived client through :meth:`_new_client`, and the
+    ``with`` block closes it again. ``__init__`` never touches the database.
+    """
 
     def __init__(
         self,
@@ -94,25 +122,26 @@ class SeekdbSearchEngine:
         collection_name: str,
         model: ModelGateway,
         dimensions: int | None = None,
+        tenant: str = DEFAULT_TENANT,
+        connect_timeout: int = CONNECT_TIMEOUT_SECONDS,
+        read_timeout: int = READ_TIMEOUT_SECONDS,
+        client_factory: Callable[..., Any] | None = None,
     ) -> None:
-        self._client = pyseekdb.Client(
-            host=host,
-            port=port,
-            database=database,
-            user=user,
-            password=password,
+        self._host = host
+        self._port = port
+        self._tenant = tenant
+        self._database = database
+        self._user = user
+        self._password = password
+        self._collection_name = collection_name
+        self._dimension = (
+            dimensions if dimensions is not None else getattr(model, "dimension", None)
         )
-        self._embedding_function = SeekdbEmbeddingFunction(model, dimensions)
-        if self._client.has_collection(collection_name):
-            self._collection = self._client.get_collection(
-                collection_name,
-                embedding_function=self._embedding_function,
-            )
-        else:
-            self._collection = self._client.create_collection(
-                name=collection_name,
-                schema=_collection_schema(self._embedding_function),
-            )
+        self._embedding_function = SeekdbEmbeddingFunction(model, self._dimension)
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        self._client_factory = client_factory or pyseekdb.Client
+        self._closed = False
 
     @classmethod
     def from_config(cls, config: LabRelayConfig, model: ModelGateway) -> SeekdbSearchEngine:
@@ -122,72 +151,93 @@ class SeekdbSearchEngine:
             database=config.seekdb_database,
             user=config.seekdb_user,
             password=config.seekdb_password,
+            tenant=config.seekdb_tenant,
             collection_name=COLLECTION_NAME,
             model=model,
             dimensions=config.embedding.dimensions,
         )
 
+    # ---------------------------------------------------------------- lifecycle
+
+    async def initialize(self) -> None:
+        """Create or reopen the collection so a broken database fails at startup."""
+        await anyio.to_thread.run_sync(self._initialize_sync)
+
+    def _initialize_sync(self) -> None:
+        with self._operation():
+            return
+
+    async def health_check(self) -> bool:
+        """Report whether the collection answers, without raising into the health endpoint."""
+        try:
+            return await anyio.to_thread.run_sync(self._health_check_sync)
+        except Exception:
+            logger.warning("seekdb health check failed", exc_info=True)
+            return False
+
+    def _health_check_sync(self) -> bool:
+        with self._operation() as collection:
+            collection.count()
+        return True
+
+    async def close(self) -> None:
+        """Retire the engine. Connections are per-operation, so nothing is left to drain."""
+        self._closed = True
+
+    # ------------------------------------------------------------- connections
+
+    def _new_client(self) -> Any:
+        return self._client_factory(
+            host=self._host,
+            port=self._port,
+            tenant=self._tenant,
+            database=self._database,
+            user=self._user,
+            password=self._password,
+            connect_timeout=self._connect_timeout,
+            read_timeout=self._read_timeout,
+            write_timeout=self._read_timeout,
+        )
+
+    def _bind(self, client: Any) -> Any:
+        if client.has_collection(self._collection_name):
+            return client.get_collection(
+                self._collection_name,
+                embedding_function=self._embedding_function,
+            )
+        return client.create_collection(
+            name=self._collection_name,
+            schema=_collection_schema(self._embedding_function),
+        )
+
+    def _open_collection(self) -> Any:
+        """Build a client, bind the collection and hand back a context-managed handle."""
+        client = self._new_client()
+        try:
+            collection = self._bind(client)
+        except Exception:
+            _close_client(client)
+            raise
+        return client, collection
+
+    @contextmanager
+    def _operation(self) -> Iterator[Any]:
+        if self._closed:
+            raise RuntimeError("The seekdb search engine is closed")
+        client, collection = self._open_collection()
+        try:
+            yield collection
+        finally:
+            _close_client(client)
+
+    # --------------------------------------------------------------- operations
+
     async def upsert_chunks(self, chunks: list[Chunk], assets: list[Asset]) -> None:
         await anyio.to_thread.run_sync(self._upsert_sync, chunks, assets)
 
     def _upsert_sync(self, chunks: list[Chunk], assets: list[Asset]) -> None:
-        assets_by_id = {asset.id: asset for asset in assets}
-        pending: dict[str, tuple[Chunk, Asset]] = {}
-        for chunk in chunks:
-            asset = assets_by_id.get(chunk.asset_id)
-            if asset is None:
-                logger.warning(
-                    "chunk not indexed operation=upsert_chunks asset_id=%s reason=unknown_asset",
-                    chunk.asset_id,
-                )
-                continue
-            if asset.status != ACTIVE_STATUS:
-                logger.info(
-                    "chunk not indexed operation=upsert_chunks project_id=%s asset_id=%s "
-                    "reason=asset_not_active",
-                    asset.project_id,
-                    asset.id,
-                )
-                continue
-            pending[chunk.id] = (chunk, asset)
-        active = list(pending.values())
-        active_asset_ids = {asset.id for _, asset in active}
-
-        # Evict assets that need no new embedding first: restricted/failed evidence must
-        # disappear immediately, and an active file with no chunks has nothing to replace.
-        for asset in assets_by_id.values():
-            if asset.status != ACTIVE_STATUS or asset.id not in active_asset_ids:
-                self._collection.delete(where={"asset_id": asset.id})
-
-        if not active:
-            return
-
-        vectors = self._embedding_function([chunk.content for chunk, _ in active])
-
-        # Only replace an active asset's old chunks after its embeddings exist, so an
-        # embedding outage cannot erase evidence that was searchable a moment ago.
-        for asset_id in active_asset_ids:
-            self._collection.delete(where={"asset_id": asset_id})
-
-        self._collection.upsert(
-            ids=[chunk.id for chunk, _ in active],
-            embeddings=vectors,
-            documents=[chunk.content for chunk, _ in active],
-            metadatas=[
-                {
-                    "project_id": asset.project_id,
-                    "asset_id": asset.id,
-                    "kind": asset.kind,
-                    "title": asset.title,
-                    "uri": asset.uri,
-                    "version": asset.version or "",
-                    "status": asset.status,
-                    "locator_json": json.dumps(chunk.locator, ensure_ascii=False),
-                    "excerpt": chunk.content[:MAX_EXCERPT_CHARACTERS],
-                }
-                for chunk, asset in active
-            ],
-        )
+        with self._operation() as collection:
+            _run_upsert(collection, self._embedding_function, chunks, assets)
 
     async def search(
         self,
@@ -209,69 +259,206 @@ class SeekdbSearchEngine:
         asset_kinds: list[str],
         limit: int,
     ) -> list[SearchHit]:
-        filters: dict[str, Any] = {
-            "project_id": project_id,
-            "status": ACTIVE_STATUS,
-        }
-        if asset_kinds:
-            filters["kind"] = {"$in": asset_kinds}
-        candidate_limit = max(limit, min(50, limit * 4))
-        result = self._collection.hybrid_search(
-            query={
-                "where": filters,
-                "where_document": {"$contains": query},
-                "n_results": candidate_limit,
-            },
-            knn={
-                "query_texts": [query],
-                "where": filters,
-                "n_results": candidate_limit,
-            },
-            rank={"rrf": {}},
-            n_results=candidate_limit,
-            include=["documents", "metadatas", "distances"],
+        with self._operation() as collection:
+            return _run_search(collection, project_id, query, asset_kinds, limit)
+
+
+def _run_upsert(
+    collection: Any,
+    embedding_function: SeekdbEmbeddingFunction,
+    chunks: list[Chunk],
+    assets: list[Asset],
+) -> None:
+    assets_by_id = {asset.id: asset for asset in assets}
+    pending: dict[str, tuple[Chunk, Asset]] = {}
+    for chunk in chunks:
+        asset = assets_by_id.get(chunk.asset_id)
+        if asset is None:
+            logger.warning(
+                "chunk not indexed operation=upsert_chunks asset_id=%s reason=unknown_asset",
+                chunk.asset_id,
+            )
+            continue
+        if asset.status != ACTIVE_STATUS:
+            logger.info(
+                "chunk not indexed operation=upsert_chunks project_id=%s asset_id=%s "
+                "reason=asset_not_active",
+                asset.project_id,
+                asset.id,
+            )
+            continue
+        pending[chunk.id] = (chunk, asset)
+    active = list(pending.values())
+    active_asset_ids = {asset.id for _, asset in active}
+
+    # Restricted/failed evidence disappears immediately, and an active asset that produced
+    # no chunk has nothing to replace, so both paths run before any embedding work.
+    for asset in assets_by_id.values():
+        if asset.status != ACTIVE_STATUS or asset.id not in active_asset_ids:
+            collection.delete(where={"asset_id": asset.id})
+
+    if not active:
+        return
+
+    new_ids = set(pending)
+    vectors = embedding_function([chunk.content for chunk, _ in active])
+
+    stale = {
+        asset_id: _stale_ids(collection, asset_id, new_ids) for asset_id in sorted(active_asset_ids)
+    }
+
+    # The new chunks are written before the old ones are removed, so an embedding or write
+    # outage cannot leave an asset with no searchable evidence.
+    collection.upsert(
+        ids=[chunk.id for chunk, _ in active],
+        embeddings=vectors,
+        documents=[chunk.content for chunk, _ in active],
+        metadatas=[
+            {
+                "project_id": asset.project_id,
+                "asset_id": asset.id,
+                "kind": asset.kind,
+                "title": asset.title,
+                "uri": asset.uri,
+                "version": asset.version or "",
+                "status": asset.status,
+                "locator_json": json.dumps(chunk.locator, ensure_ascii=False),
+                "excerpt": chunk.content[:MAX_EXCERPT_CHARACTERS],
+            }
+            for chunk, asset in active
+        ],
+    )
+
+    for asset_id, chunk_ids in stale.items():
+        if chunk_ids:
+            # ``chunk_ids`` came from a read scoped to this asset, so the delete cannot reach
+            # another asset's evidence, and a chunk id that reappeared in this batch is kept.
+            collection.delete(ids=chunk_ids)
+            logger.info(
+                "stale chunks removed operation=upsert_chunks asset_id=%s count=%s",
+                asset_id,
+                len(chunk_ids),
+            )
+
+
+def _stale_ids(collection: Any, asset_id: str, new_ids: set[str]) -> list[str]:
+    existing = collection.get(where={"asset_id": asset_id}, include=[]) or {}
+    ids = existing.get("ids") or []
+    return sorted({chunk_id for chunk_id in ids if chunk_id not in new_ids})
+
+
+def _run_search(
+    collection: Any,
+    project_id: str,
+    query: str,
+    asset_kinds: list[str],
+    limit: int,
+) -> list[SearchHit]:
+    filters: dict[str, Any] = {
+        "project_id": project_id,
+        "status": ACTIVE_STATUS,
+    }
+    if asset_kinds:
+        filters["kind"] = {"$in": asset_kinds}
+    candidate_limit = max(limit, min(MAX_CANDIDATES, limit * 4))
+    result = collection.hybrid_search(
+        query={
+            "where": filters,
+            "where_document": {"$contains": query},
+            "n_results": candidate_limit,
+        },
+        knn={
+            "query_texts": [query],
+            "where": filters,
+            "n_results": candidate_limit,
+        },
+        rank={"rrf": {}},
+        n_results=candidate_limit,
+        include=["documents", "metadatas"],
+    )
+    hits = _convert(result, project_id=project_id, allowed_kinds=asset_kinds)
+    return _diversify(hits)[:limit]
+
+
+def _to_relevance(rank_position: int) -> float:
+    """Reciprocal-rank relevance for a hit's position in the fused result list."""
+    return 1.0 / (RRF_RANK_CONSTANT + rank_position + 1)
+
+
+# Kept as an alias so the derivation reads as an explicit conversion step.
+_relevance_from_rank = _to_relevance
+
+
+def _convert(
+    result: dict[str, Any],
+    *,
+    project_id: str,
+    allowed_kinds: Sequence[str],
+) -> list[SearchHit]:
+    """Turn a pyseekdb result page into citations, re-checking the predicate defensively.
+
+    The server-side ``where`` clause is the only thing standing between one project's
+    evidence and another's, so a malformed predicate must not silently widen the scope:
+    every row is re-checked here before it can become a citation.
+    """
+    ids = (result.get("ids") or [[]])[0]
+    metadatas = (result.get("metadatas") or [[]])[0]
+    documents = (result.get("documents") or [[]])[0]
+    kinds = set(allowed_kinds)
+    hits: list[SearchHit] = []
+
+    for index, _chunk_id in enumerate(ids):
+        metadata = metadatas[index] if index < len(metadatas) else {}
+        asset_id = metadata.get("asset_id")
+        kind = metadata.get("kind")
+        if not asset_id or not kind:
+            logger.warning(
+                "search hit skipped operation=convert asset_id=%s reason=missing_metadata",
+                asset_id or "-",
+            )
+            continue
+        if metadata.get("project_id") != project_id:
+            logger.warning(
+                "search hit skipped operation=convert asset_id=%s reason=project_mismatch",
+                asset_id,
+            )
+            continue
+        if metadata.get("status") != ACTIVE_STATUS:
+            logger.warning(
+                "search hit skipped operation=convert asset_id=%s reason=asset_not_active",
+                asset_id,
+            )
+            continue
+        if kinds and kind not in kinds:
+            logger.warning(
+                "search hit skipped operation=convert asset_id=%s reason=kind_excluded",
+                asset_id,
+            )
+            continue
+        document = (documents[index] if index < len(documents) else "") or metadata.get(
+            "excerpt", ""
         )
-        return _diversify(self._convert(result))[:limit]
-
-    @staticmethod
-    def _convert(result: dict[str, Any]) -> list[SearchHit]:
-        ids = (result.get("ids") or [[]])[0]
-        metadatas = (result.get("metadatas") or [[]])[0]
-        documents = (result.get("documents") or [[]])[0]
-        distances = (result.get("distances") or [[]])[0]
-        hits: list[SearchHit] = []
-
-        for index, _chunk_id in enumerate(ids):
-            metadata = metadatas[index] if index < len(metadatas) else {}
-            asset_id = metadata.get("asset_id")
-            kind = metadata.get("kind")
-            if not asset_id or not kind:
-                logger.warning(
-                    "search hit skipped operation=convert asset_id=%s reason=missing_metadata",
-                    asset_id or "-",
-                )
-                continue
-            document = (documents[index] if index < len(documents) else "") or metadata.get(
-                "excerpt", ""
+        hits.append(
+            SearchHit(
+                citation=Citation(
+                    asset_id=asset_id,
+                    kind=kind,
+                    title=metadata.get("title", ""),
+                    uri=metadata.get("uri", ""),
+                    version=metadata.get("version") or None,
+                    locator=_parse_locator(metadata.get("locator_json")),
+                    excerpt=document[:MAX_EXCERPT_CHARACTERS],
+                ),
+                # pyseekdb's ``distances`` channel carries either a fused RRF relevance or a
+                # cosine distance depending on the request shape, so its value is never
+                # trusted. Rank position is unambiguous and converts deterministically.
+                score=_to_relevance(index),
             )
-            relevance = distances[index] if index < len(distances) else 0.0
-            hits.append(
-                SearchHit(
-                    citation=Citation(
-                        asset_id=asset_id,
-                        kind=kind,
-                        title=metadata.get("title", ""),
-                        uri=metadata.get("uri", ""),
-                        version=metadata.get("version") or None,
-                        locator=_parse_locator(metadata.get("locator_json")),
-                        excerpt=document[:MAX_EXCERPT_CHARACTERS],
-                    ),
-                    # Under ``rank={"rrf": {}}`` pyseekdb returns the fused relevance in
-                    # ``distances``; it is higher-is-better, not a distance.
-                    score=float(relevance or 0.0),
-                )
-            )
-        return hits
+        )
+    # Highest relevance first, with asset and chunk identity resolving ties, so the order
+    # the caller sees never depends on how the SDK happened to sequence equal scores.
+    hits.sort(key=lambda hit: (-hit.score, hit.citation.asset_id, hit.citation.uri))
+    return hits
 
 
 def _parse_locator(raw: Any) -> dict[str, str | int]:
