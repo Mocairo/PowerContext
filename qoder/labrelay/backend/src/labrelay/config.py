@@ -54,7 +54,16 @@ class LabRelayConfig(BaseModel):
 def _yaml_value(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"{path} must contain a key/value mapping at the top level, but parsed as "
+            f"{type(loaded).__name__}. Give the file a single top-level key "
+            f"(for example 'server:') instead of a list or scalar."
+        )
+    return loaded
 
 
 def load_app_config(project_root: Path) -> LabRelayConfig:
@@ -62,12 +71,14 @@ def load_app_config(project_root: Path) -> LabRelayConfig:
     retrieval = _yaml_value(project_root / "configs/retrieval.yaml")
     planner = _yaml_value(project_root / "configs/planner.yaml")
 
-    server = app.get("server", {})
+    server = app.get("server") or {}
     if os.getenv("LABRELAY_API_PORT"):
         server = {**server, "port": int(os.environ["LABRELAY_API_PORT"])}
+    if os.getenv("LABRELAY_API_BIND_ADDRESS"):
+        server = {**server, "bind_address": os.environ["LABRELAY_API_BIND_ADDRESS"]}
 
-    retrieval_cfg = retrieval.get("retrieval", {}).get("fusion", {})
-    planner_cfg = planner.get("planning", {}).get("constraints", {})
+    retrieval_cfg = (retrieval.get("retrieval") or {}).get("fusion") or {}
+    planner_cfg = (planner.get("planning") or {}).get("constraints") or {}
 
     dimensions = os.getenv("EMBEDDING_DIMENSIONS")
     return LabRelayConfig(

@@ -10,7 +10,7 @@ seekdb-down:
 	docker compose --env-file .env down
 
 backend-install:
-	uv sync --directory backend
+	uv sync --directory backend --extra dev
 
 backend-test:
 	uv run --directory backend pytest
