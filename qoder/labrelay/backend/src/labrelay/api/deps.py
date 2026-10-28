@@ -1,4 +1,4 @@
-"""The two seams every Task 6 route depends on: the service, and the project it acts on.
+"""The seams every route depends on: the services, the project, and the assessment it plans from.
 
 ``get_service`` reads the ``LabRelayService`` Task 5 built and Task 12 will wire from real
 dependencies, so no route imports a repository, an engine or a gateway directly. A missing
@@ -16,7 +16,12 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from labrelay.api.errors import PROJECT_NOT_FOUND, SERVICE_NOT_CONFIGURED, ApiError
+from labrelay.api.errors import (
+    ASSESSMENT_NOT_FOUND,
+    PROJECT_NOT_FOUND,
+    SERVICE_NOT_CONFIGURED,
+    ApiError,
+)
 from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.domain.models import Project
@@ -57,3 +62,25 @@ async def ensure_project(service: LabRelayService, project_id: str) -> Project:
             {"project_id": project_id},
         )
     return project
+
+
+async def ensure_assessment(
+    service: LabRelayService, project: Project, assessment_id: str
+) -> dict[str, object]:
+    """The stored assessment a plan request names, or a 404.
+
+    An assessment filed under another project answers exactly like a missing one: confirming that
+    the id exists somewhere would publish another project's identifier space, and the plan would
+    be built from answers that were never this learner's (spec 14).
+    :meth:`LabRelayService.generate_plan` re-checks the same ownership, because it is the
+    boundary every caller crosses, HTTP or not.
+    """
+    stored = await service.repository.get_assessment(assessment_id)
+    if stored is None or stored.get("project_id") != project.id:
+        raise ApiError(
+            404,
+            ASSESSMENT_NOT_FOUND,
+            f"Assessment {assessment_id} does not exist.",
+            {"assessment_id": assessment_id},
+        )
+    return stored

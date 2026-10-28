@@ -5,9 +5,10 @@ payload — each stage carries its own ``required_evidence`` kinds, so this fake
 the requirement from the request instead of hard-coding a stage table or a canned
 ``expected_plan`` answer.
 
-Task ids are namespaced by the assessment they were generated for: two plan versions of
-one project must never write onto the same ``learning_task.id`` primary key, and a
-prerequisite chain has to point at the tasks of its own version.
+Task ids are namespaced by the plan they are generated for (falling back to the assessment, then
+to a digest of the request): two plan versions of one project must never write onto the same
+``learning_task.id`` primary key, and a prerequisite chain has to point at the tasks of its own
+version.
 """
 
 from __future__ import annotations
@@ -23,14 +24,24 @@ ACTIVE_TERMS = ("baseline", "训练", "实验")
 MAX_NAMESPACE_CHARS = 48
 
 
+def _named(value: object) -> str:
+    """A usable namespace taken from one payload field, or the empty string."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
 def _task_namespace(user_payload: dict[str, object]) -> str:
-    """Stable discriminator for the ids of one plan, from the payload itself."""
+    """Stable discriminator for the ids of one plan, from the payload itself.
+
+    The plan being generated wins, then the assessment it was planned from, then a digest of the
+    request: a caller that supplies neither still cannot collide with another one's ids.
+    """
     assessment = user_payload.get("assessment")
-    raw = assessment.get("id") if isinstance(assessment, dict) else None
-    discriminator = raw.strip() if isinstance(raw, str) else ""
+    discriminator = _named(user_payload.get("plan_id")) or _named(
+        assessment.get("id") if isinstance(assessment, dict) else None
+    )
     if not discriminator:
-        # Payloads without an assessment id (fixtures, older callers) still must not
-        # share an id space, so fall back to a digest of the request.
+        # Payloads without either id (fixtures, older callers) still must not share an id
+        # space, so fall back to a digest of the request.
         canonical = json.dumps(user_payload, sort_keys=True, ensure_ascii=False, default=str)
         discriminator = f"payload-{hashlib.sha256(canonical.encode()).hexdigest()[:16]}"
     if len(discriminator) > MAX_NAMESPACE_CHARS:

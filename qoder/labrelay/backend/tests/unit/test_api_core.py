@@ -637,4 +637,7 @@ def test_the_openapi_document_lists_the_project_and_handoff_surface() -> None:
         "/api/projects/{project_id}/handoff",
         "/api/projects/{project_id}/handoff/acknowledge",
         "/api/projects/{project_id}/handoff/outcome",
+        "/api/projects/{project_id}/assessments",
+        "/api/projects/{project_id}/plans",
+        "/api/plans/{plan_id}",
     }

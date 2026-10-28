@@ -199,13 +199,17 @@ def plan_payload(
     evidence_by_stage: dict[int, list[str]] | None = None,
     *,
     assessment_id: str = "assessment-1",
+    plan_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "project": {"id": "project-1", "title": "基线复现"},
         "handoff": None,
         "assessment": {"id": assessment_id},
         "stages": stages(evidence_by_stage),
     }
+    if plan_id is not None:
+        payload["plan_id"] = plan_id
+    return payload
 
 
 def _protocol_methods(protocol: type[ModelGateway]) -> set[str]:
@@ -710,6 +714,42 @@ async def test_task_ids_never_collide_across_assessment_ids() -> None:
                 ).id
                 == current["id"]
             )
+
+
+async def test_task_ids_are_namespaced_by_the_plan_being_generated() -> None:
+    """Task 10's carry-forward: one assessment, two plan versions, two disjoint id spaces.
+
+    Replanning reuses the stored assessment payload, so the assessment id alone is not enough to
+    keep ``learning_task.id`` unique across versions — the ``plan_id`` the planner sends is.
+    """
+    gateway = DeterministicModelGateway()
+    shared = plan_payload(assessment_id="assessment-a")
+    first = await gateway.generate_json("system", {**shared, "plan_id": "plan-one"})
+    second = await gateway.generate_json("system", {**shared, "plan_id": "plan-two"})
+    again = await gateway.generate_json("system", {**shared, "plan_id": "plan-one"})
+
+    assert [task["id"] for task in first["tasks"]] == [
+        f"plan-one-stage-{stage}" for stage in range(7)
+    ]
+    assert {task["id"] for task in first["tasks"]}.isdisjoint(
+        {task["id"] for task in second["tasks"]}
+    )
+    # Same plan id, same ids: the fake stays deterministic inside one version.
+    assert [task["id"] for task in again["tasks"]] == [task["id"] for task in first["tasks"]]
+    # Each version still chains to its own previous stage, never to the other version's.
+    for plan in (first, second):
+        for previous, current in pairwise(plan["tasks"]):
+            assert current["prerequisite_task_ids"] == [previous["id"]]
+
+
+async def test_a_long_plan_id_is_hashed_into_the_column_width() -> None:
+    """The ``plan_id`` namespace obeys the same VARCHAR(64) limit as the assessment one."""
+    response = await DeterministicModelGateway().generate_json(
+        "system", plan_payload(plan_id="p" * 200)
+    )
+
+    assert all(len(task["id"]) <= 64 for task in response["tasks"])
+    assert response["tasks"][3]["prerequisite_task_ids"] == [response["tasks"][2]["id"]]
 
 
 async def test_task_ids_are_stable_for_the_same_assessment() -> None:

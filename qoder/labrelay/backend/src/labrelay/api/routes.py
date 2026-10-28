@@ -1,4 +1,4 @@
-"""The four Task 6 routes: open a project, import its evidence, list it, search it.
+"""The routes the offline API answers on: projects, evidence, retrieval, Handoff, plans.
 
 Each handler is a call into :class:`labrelay.application.services.LabRelayService` plus the
 mapping from a service outcome to an HTTP answer — nothing else. Decisions about what an import
@@ -7,8 +7,8 @@ the responses keep the observability those tasks produced: ``ImportResult`` trav
 ``restricted`` and ``restricted_reasons``, so an operator can see how much evidence was withheld
 from the index and why without any file content crossing the wire.
 
-Handoff, assessment, plans, tasks and the question endpoint arrive with Tasks 9-13; this router
-declares only what the in-memory service can already answer.
+Tasks, replanning and the question endpoint arrive with Tasks 11-13; this router declares only
+what the in-memory service can already answer.
 """
 
 from __future__ import annotations
@@ -19,16 +19,24 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 
-from labrelay.api.deps import ensure_project, get_handoff_service, get_service
+from labrelay.api.deps import ensure_assessment, ensure_project, get_handoff_service, get_service
 from labrelay.api.errors import (
     DEPENDENCY_UNAVAILABLE,
     HANDOFF_NOT_FOUND,
     HANDOFF_NOT_READY,
     IMPORT_PATH_NOT_DIRECTORY,
+    PLAN_NOT_FOUND,
+    PLAN_VALIDATION_FAILED,
     ApiError,
     request_id_of,
 )
-from labrelay.api.schemas import CreateProjectRequest, ImportRequest, SearchRequest
+from labrelay.api.schemas import (
+    AssessmentRequest,
+    CreateProjectRequest,
+    GeneratePlanRequest,
+    ImportRequest,
+    SearchRequest,
+)
 from labrelay.application.handoff import (
     HandoffAcknowledgementRequest,
     HandoffConfirmRequest,
@@ -39,6 +47,7 @@ from labrelay.application.handoff import (
 )
 from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
 from labrelay.context.powercontext import PowerContextUnavailableError
+from labrelay.planning.validator import PlanValidationError
 
 logger = logging.getLogger("labrelay.api.routes")
 
@@ -149,6 +158,62 @@ def build_router() -> APIRouter:
             project.id, payload.query, list(payload.asset_kinds), payload.limit
         )
         return {"hits": [hit.model_dump() for hit in hits]}
+
+    @router.post("/projects/{project_id}/assessments", status_code=201)
+    async def submit_assessment(
+        project_id: str, payload: AssessmentRequest, service: ServiceDep
+    ) -> dict[str, Any]:
+        # The project is resolved from the URL and the assessment id is minted by the service, so
+        # neither half of the identity comes from the body (Task 10).
+        project = await ensure_project(service, project_id)
+        assessment = await service.submit_assessment(project.id, payload.model_dump())
+        return assessment.model_dump(mode="json")
+
+    @router.post("/projects/{project_id}/plans", status_code=201)
+    async def generate_plan(
+        project_id: str,
+        payload: GeneratePlanRequest,
+        service: ServiceDep,
+        request: Request,
+    ) -> dict[str, Any]:
+        project = await ensure_project(service, project_id)
+        await ensure_assessment(service, project, payload.assessment_id)
+        try:
+            plan = await service.generate_plan(project.id, payload.assessment_id)
+        except PlanValidationError as exc:
+            # The model answer is not a plan: it broke one of the rules Task 10 owns. The reason
+            # code is what the client branches on; the validator's own text (which can name a
+            # task or asset id from model output) stays in the log line, never in the body.
+            logger.warning(
+                "plan rejected operation=generate_plan request_id=%s project_id=%s reason=%s",
+                request_id_of(request),
+                project.id,
+                exc.reason,
+            )
+            raise ApiError(
+                422,
+                PLAN_VALIDATION_FAILED,
+                "The generated plan did not pass validation.",
+                {"reason": exc.reason, "project_id": project.id},
+            ) from None
+        except PowerContextUnavailableError:
+            # Reading the committed Handoff is a PowerContext call, so its outage keeps the
+            # status Task 9 already uses for it.
+            raise _powercontext_unavailable(project.id) from None
+        return plan.model_dump(mode="json")
+
+    @router.get("/plans/{plan_id}")
+    async def get_plan(plan_id: str, service: ServiceDep) -> dict[str, Any]:
+        """One plan version by id, including the drafts a material gap left behind."""
+        plan = await service.repository.get_plan(plan_id)
+        if plan is None:
+            raise ApiError(
+                404,
+                PLAN_NOT_FOUND,
+                f"Plan {plan_id} does not exist.",
+                {"plan_id": plan_id},
+            )
+        return plan.model_dump(mode="json")
 
     @router.post("/projects/{project_id}/handoff/prepare")
     async def prepare_handoff(

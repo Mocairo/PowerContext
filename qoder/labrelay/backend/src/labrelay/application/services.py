@@ -24,14 +24,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from labrelay.config import PlannerConfig
+from labrelay.domain.assessment import Assessment, build_assessment, new_assessment_id
 from labrelay.domain.models import (
     ALLOWED_TASK_TRANSITIONS,
+    LearningPlan,
     LearningTask,
     Project,
     TaskEvent,
 )
 from labrelay.domain.ports import ContextGateway, ModelGateway, Repository, SearchEngine, SearchHit
 from labrelay.importers.assets import ImportResult, import_directory
+from labrelay.planning.generator import generate_learning_plan
 
 logger = logging.getLogger("labrelay.application.services")
 
@@ -39,6 +42,7 @@ logger = logging.getLogger("labrelay.application.services")
 # stored note agree on what was being remembered.
 DECISION_KIND = "decision"
 PROGRESS_KIND = "progress"
+PREFERENCE_KIND = "preference"
 
 # The two event types Task 5 appends. "evidence_submitted" and the replanning events arrive
 # with Task 11; until the vocabulary is complete these stay plain strings on the TaskEvent.
@@ -67,7 +71,7 @@ class ContextServiceUnavailableError(ValueError):
 
 
 class LabRelayService:
-    """Project creation, evidence import, retrieval and task progress for one project store."""
+    """Project creation, evidence import, retrieval, assessment, planning and task progress."""
 
     def __init__(
         self,
@@ -83,7 +87,7 @@ class LabRelayService:
         self.engine = engine
         self.context = context
         self.model = model
-        # Task 10's planner reads these constraints; nothing here enforces them yet.
+        # Task 10's planner enforces these; the service only carries them to the validator.
         self.planner_config = planner_config or PlannerConfig()
 
     async def create_project(self, title: str, research_area: str, description: str) -> Project:
@@ -142,6 +146,81 @@ class LabRelayService:
     ) -> list[SearchHit]:
         """Hybrid retrieval over one project's active evidence; the engine owns the ranking."""
         return await self.engine.search(project_id, query, kinds, limit)
+
+    async def submit_assessment(self, project_id: str, payload: dict) -> Assessment:
+        """Score one learner answer set, file it and hand the goal to learner memory.
+
+        The identity is minted here and the project id is taken from the caller that already
+        resolved it, so a payload cannot choose which row it writes onto or plan one project out
+        of another's answers. Raises :class:`KeyError` for an unknown project; a malformed answer
+        set is pydantic's own ``ValidationError`` (a ``ValueError``), which the REST layer already
+        turns into a 422 because it validates the same model.
+        """
+        project = await self.repository.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        assessment = build_assessment(
+            {**payload, "id": new_assessment_id(), "project_id": project.id}
+        )
+        await self.repository.save_assessment(
+            assessment.id, project.id, assessment.model_dump(mode="json")
+        )
+        # Spec 14: the answers are used to shape the path, so what is remembered is the goal and
+        # the budget, never a judgement about the learner.
+        await self._remember(
+            project.learner_scope_id,
+            PREFERENCE_KIND,
+            f"接手人目标为 {assessment.target}，每周可投入 {assessment.hours_per_week} 小时。",
+            reason=f"assessment:{assessment.id}",
+            project_id=project.id,
+        )
+        return assessment
+
+    async def generate_plan(self, project_id: str, assessment_id: str) -> LearningPlan:
+        """Generate, validate and possibly activate this project's next plan version.
+
+        Generation itself is :mod:`labrelay.planning.generator`; this wrapper resolves the two
+        ids, refuses an assessment that belongs to another project and records what the learner
+        should be able to recover in a new session — including why a plan stayed a draft.
+        """
+        project = await self.repository.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        assessment_payload = await self.repository.get_assessment(assessment_id)
+        if assessment_payload is None:
+            raise KeyError(assessment_id)
+        assessment = Assessment.model_validate(assessment_payload)
+        if assessment.project_id != project.id:
+            # Not this project's answers. Raised as a missing assessment on purpose: the API must
+            # not confirm that the id exists somewhere else (spec 19.1).
+            raise KeyError(assessment_id)
+
+        plan = await generate_learning_plan(
+            repository=self.repository,
+            engine=self.engine,
+            context=self.context,
+            model=self.model,
+            config=self.planner_config,
+            project=project,
+            assessment=assessment,
+        )
+        await self._remember(
+            project.learner_scope_id,
+            PROGRESS_KIND,
+            f"已生成学习路径版本 {plan.version}，当前共有 {len(plan.tasks)} 个任务。",
+            reason=f"plan:{plan.id}",
+            project_id=project.id,
+        )
+        gap_titles = "、".join(task.title for task in plan.tasks if task.status == "needs_material")
+        if gap_titles:
+            await self._remember(
+                project.learner_scope_id,
+                PROGRESS_KIND,
+                f"任务「{gap_titles}」资料不足，已保存为待补充草稿，补齐资料前不会开放。",
+                reason=f"plan:{plan.id}:needs_material",
+                project_id=project.id,
+            )
+        return plan
 
     async def update_task_status(
         self, task_id: str, status: str, payload: dict | None = None
