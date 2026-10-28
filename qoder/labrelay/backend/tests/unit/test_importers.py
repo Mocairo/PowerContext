@@ -20,6 +20,7 @@ from labrelay.importers.assets import (
     skip_reason,
 )
 from labrelay.importers.pdf import extract_pdf_chunks
+from labrelay.retrieval.in_memory import InMemorySearchEngine
 
 SECURITY_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "security.yaml"
 # Every value ``skip_reason`` may return; reasons are single tokens, never a token
@@ -397,6 +398,11 @@ async def test_import_directory_persists_assets_and_indexes_chunks(tmp_path: Pat
 
 
 async def test_import_directory_does_not_index_restricted_assets(tmp_path: Path) -> None:
+    """A restricted asset is handed to the engine for adoption, never for indexing.
+
+    The asset must reach ``upsert_chunks`` so the engine can evict evidence written
+    while the file still looked clean, but it never contributes a chunk of its own.
+    """
     source = _sample_project(tmp_path)
     restricted = build_asset("project-1", source / "config.yaml")
     assert restricted.status == "restricted"
@@ -408,9 +414,9 @@ async def test_import_directory_does_not_index_restricted_assets(tmp_path: Path)
     assert repository.assets[restricted.id] == restricted
     assert result["restricted"] == 1
     assert result["restricted_reasons"] == {restricted.id: ["api_secret"]}
-    assert restricted.id not in search_engine.asset_ids
+    assert restricted.id in search_engine.asset_ids
     assert sorted(search_engine.asset_ids) == sorted(
-        asset.id for asset in repository.assets.values() if asset.status == "active"
+        asset.id for asset in repository.assets.values()
     )
     assert all(chunk.asset_id != restricted.id for chunk in search_engine.chunks.values())
 
@@ -542,7 +548,9 @@ async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
     }
     failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
     assert [asset.title for asset in failed] == ["scan.pdf"]
-    assert failed[0].id not in search_engine.asset_ids
+    # The failed asset reaches the engine for adoption (so any earlier evidence for it
+    # is evicted), but it never contributes chunks.
+    assert failed[0].id in search_engine.asset_ids
     assert [chunk.asset_id for chunk in search_engine.chunks.values()] == [
         build_asset("project-1", note).id
     ]
@@ -614,10 +622,13 @@ async def test_import_directory_reports_restricted_and_unreadable_files(
     assert all(len(reasons) > 0 for reasons in result["restricted_reasons"].values())
     assert all(reasons == sorted(reasons) for reasons in result["restricted_reasons"].values())
 
-    # Restricted evidence is stored and stays out of the index.
+    # Restricted evidence is stored, handed to the engine for adoption, and never
+    # contributes a chunk.
     assert repository.assets[restricted_id].status == "restricted"
-    assert restricted_id not in search_engine.asset_ids
-    assert sorted(search_engine.asset_ids) == [build_asset("project-1", clean).id]
+    assert restricted_id in search_engine.asset_ids
+    assert sorted(search_engine.asset_ids) == sorted(
+        [restricted_id, build_asset("project-1", clean).id]
+    )
     assert [chunk.asset_id for chunk in search_engine.chunks.values()] == [
         build_asset("project-1", clean).id
     ]
@@ -639,3 +650,64 @@ async def test_import_directory_reports_restricted_and_unreadable_files(
     assert "another-secret-value" not in caplog.text
     assert "unreachable evidence" not in caplog.text
     assert "super-secret-value" not in repr(result)
+
+
+# --- real-engine re-import eviction (Task 3 x Task 4 integration) --------------
+
+
+class BaselineModel:
+    """The retrieval tests' embedding stand-in: 1.0 for any text mentioning a baseline."""
+
+    def embed(self, texts):
+        return [[1.0 if "baseline" in text else 0.0] for text in texts]
+
+
+class RecordingSearchEngine(InMemorySearchEngine):
+    """The real engine, plus a log of what each ``upsert_chunks`` call was handed."""
+
+    def __init__(self) -> None:
+        super().__init__(model=BaselineModel())
+        self.upserts: list[tuple[list[Chunk], list[Asset]]] = []
+
+    async def upsert_chunks(self, chunks: list[Chunk], assets: list[Asset]) -> None:
+        self.upserts.append((list(chunks), list(assets)))
+        await super().upsert_chunks(chunks, assets)
+
+
+async def test_reimport_after_content_gains_a_credential_evicts_searchable_chunks(
+    tmp_path: Path,
+) -> None:
+    """A file that turns credential-bearing between imports stops being retrievable.
+
+    The first import indexes the clean file and it is searchable. The second import
+    finds a credential pattern, restricts the asset, and must hand that asset to
+    ``upsert_chunks`` with no chunks so the engine evicts the evidence written while
+    the file still looked active.
+    """
+    train = tmp_path / "train.py"
+    train.write_text("def run_baseline():\n    return 1\n", encoding="utf-8")
+    repository = FakeRepository()
+    engine = RecordingSearchEngine()
+
+    first = await import_directory(repository, engine, "project-1", tmp_path)
+    assert first["restricted"] == 0
+    hits = await engine.search("project-1", "baseline", [], 5)
+    assert [hit.citation.title for hit in hits] == ["train.py"]
+
+    train.write_text(
+        "api_key=super-secret-value\ndef run_baseline():\n    return 1\n",
+        encoding="utf-8",
+    )
+    second = await import_directory(repository, engine, "project-1", tmp_path)
+    restricted = build_asset("project-1", train)
+    assert second["restricted"] == 1
+    assert second["restricted_reasons"] == {restricted.id: ["api_secret"]}
+    assert repository.assets[restricted.id].status == "restricted"
+
+    # The newly restricted asset was handed to the engine's last upsert, with no chunks.
+    chunks_arg, assets_arg = engine.upserts[-1]
+    assert chunks_arg == []
+    assert [asset.id for asset in assets_arg] == [restricted.id]
+
+    # The chunks indexed by the first import are no longer returned.
+    assert await engine.search("project-1", "baseline", [], 5) == []

@@ -300,10 +300,13 @@ async def import_directory(
     projects without either re-owning the other's assets, and re-importing one
     project updates in place rather than duplicating.
 
-    Only ``active`` evidence reaches the search engine: files whose content trips a
-    credential pattern are persisted as ``restricted`` and never chunked or indexed,
-    and a file that cannot be chunked is stored as ``status="failed"`` with the
-    reason logged. Unreadable files and skipped files are counted, never fatal, so
+    Only ``active`` evidence contributes chunks to the search engine, but every asset
+    this run classified is handed to ``upsert_chunks`` in its freshest status: a file
+    that was clean on an earlier import and trips a credential pattern now is adopted
+    with no chunks, which is what evicts the stale evidence from the index. Files whose
+    content trips a credential pattern are persisted as ``restricted`` and never
+    chunked, and a file that cannot be chunked is stored as ``status="failed"`` with
+    the reason logged. Unreadable files and skipped files are counted, never fatal, so
     one locked file cannot abort an import that has already persisted assets.
 
     Returns ``assets`` (asset records persisted by this run, restricted included),
@@ -327,8 +330,11 @@ async def import_directory(
             detail or "-",
         )
 
-    indexed_assets: list[Asset] = []
     indexed_chunks: list[Chunk] = []
+    # Active, restricted and failed alike: every asset this run classifies travels to
+    # the engine, so one that turned restricted evicts the chunks an earlier import
+    # indexed for it. Only the active ones ever carry chunks.
+    assets_to_adopt: list[Asset] = []
     restricted_reasons: dict[str, list[str]] = {}
     persisted = 0
     failed = 0
@@ -350,6 +356,7 @@ async def import_directory(
         if asset.status == "restricted":
             await repository.save_asset(asset)
             persisted += 1
+            assets_to_adopt.append(asset)
             # The blocked-file list is the point of this line: which asset, why, and
             # that it never reached the index. Findings are pattern names only.
             names = sorted(findings)
@@ -376,15 +383,17 @@ async def import_directory(
                 path,
                 exc,
             )
-            await repository.save_asset(asset.model_copy(update={"status": "failed"}))
+            failed_asset = asset.model_copy(update={"status": "failed"})
+            await repository.save_asset(failed_asset)
+            assets_to_adopt.append(failed_asset)
             continue
 
         await repository.save_asset(asset)
         persisted += 1
-        indexed_assets.append(asset)
+        assets_to_adopt.append(asset)
         indexed_chunks.extend(asset_chunks)
 
-    await search_engine.upsert_chunks(indexed_chunks, indexed_assets)
+    await search_engine.upsert_chunks(indexed_chunks, assets_to_adopt)
     return {
         "assets": persisted,
         "chunks": len(indexed_chunks),
