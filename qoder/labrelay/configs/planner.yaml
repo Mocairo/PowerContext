@@ -1,0 +1,72 @@
+planning:
+  default_stages:
+    - id: 0
+      key: lab_orientation
+      name: 项目与实验室规范
+      objective: 理解项目目标、数据位置、资源规则和安全约束
+      required_evidence:
+        - operations
+    - id: 1
+      key: paper_foundations
+      name: 理论与论文基础
+      objective: 理解研究问题、核心方法和关键结论
+      required_evidence:
+        - paper
+        - note
+    - id: 2
+      key: environment_data
+      name: 环境与数据准备
+      objective: 完成运行环境、依赖和数据位置检查
+      required_evidence:
+        - code
+        - config
+        - operations
+    - id: 3
+      key: code_tour
+      name: 代码导读
+      objective: 理解入口、核心模块、配置和实验脚本关系
+      required_evidence:
+        - code
+        - config
+    - id: 4
+      key: baseline_reproduction
+      name: 实验复现
+      objective: 使用指定版本复现已有结果并解释指标
+      required_evidence:
+        - code
+        - config
+        - experiment
+    - id: 5
+      key: continued_work
+      name: 接手未完成工作
+      objective: 推进 Handoff 中确认的下一项工作
+      required_evidence:
+        - code
+        - experiment
+        - note
+    - id: 6
+      key: reverse_handoff
+      name: 总结与反向交接
+      objective: 输出进展、证据、问题和下一步建议
+      required_evidence:
+        - note
+
+  constraints:
+    enforce_stage_order: true
+    environment_before_experiments: true
+    every_task_requires_citation: true
+    experimental_tasks_require_code_config_metrics: true
+    missing_evidence_status: needs_material
+    prohibit_invented_commands: true
+
+  replanning:
+    preserve_completed_tasks: true
+    preserve_task_events: true
+    create_new_plan_version: true
+    triggers:
+      - assessment_update
+      - checkpoint_failed
+      - material_missing
+      - user_blocked
+      - goal_changed
+      - handoff_updated

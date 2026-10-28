@@ -1,0 +1,32 @@
+logging:
+  level: INFO
+  format: json
+  include_request_id: true
+  console:
+    enabled: true
+  file:
+    enabled: false
+    path: ./data/logs/labrelay.log
+  rotation:
+    max_bytes: 10485760
+    backup_count: 5
+
+structured_fields:
+  allowed:
+    - request_id
+    - operation
+    - project_id
+    - asset_id
+    - plan_id
+    - task_id
+    - dependency_status
+    - latency_ms
+    - result_count
+    - validation_code
+  forbidden:
+    - raw_asset_content
+    - paper_full_text
+    - source_code_full_text
+    - personal_note_full_text
+    - credentials
+    - model_api_keys
