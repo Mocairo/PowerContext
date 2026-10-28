@@ -16,7 +16,7 @@ backend-test:
 	uv run --directory backend pytest
 
 backend-dev:
-	uv run --directory backend uvicorn labrelay.api.main:app --reload --host 127.0.0.1 --port 8010
+	uv run --directory backend uvicorn labrelay.api.main:create_default_app --factory --reload --host 127.0.0.1 --port 8010
 
 frontend-install:
 	npm --prefix frontend install

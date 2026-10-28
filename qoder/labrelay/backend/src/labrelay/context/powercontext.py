@@ -138,6 +138,15 @@ class PowerContextService:
             return False
         return True
 
+    async def aclose(self) -> None:
+        """Release the SDK's HTTP resources when the app shuts down."""
+        closer = getattr(self.client, "aclose", None) or getattr(self.client, "close", None)
+        if closer is None:
+            return
+        result = closer()
+        if hasattr(result, "__await__"):
+            await result
+
     async def create_source(self, scope_id: str, request: CreateSourceRequest) -> Any:
         return await self._call(self.client.create_source(scope_id, request))
 

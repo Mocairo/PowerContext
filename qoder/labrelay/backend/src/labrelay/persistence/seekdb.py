@@ -221,6 +221,16 @@ class SeekdbRepository:
     async def initialize(self) -> None:
         await anyio.to_thread.run_sync(self._initialize_sync)
 
+    async def health_check(self) -> bool:
+        return await anyio.to_thread.run_sync(self._health_check_sync)
+
+    def _health_check_sync(self) -> bool:
+        try:
+            self._fetch_one("SELECT 1 AS value", ())
+        except Exception:
+            return False
+        return True
+
     def _initialize_sync(self) -> None:
         with closing(self._connect(with_database=False)) as connection:
             try:

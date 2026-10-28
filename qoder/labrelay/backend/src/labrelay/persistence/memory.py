@@ -37,6 +37,9 @@ class InMemoryRepository:
         """No schema to create; repeatable so startup wiring can call it unconditionally."""
         return None
 
+    async def health_check(self) -> bool:
+        return True
+
     async def save_project(self, project: Project) -> None:
         self.projects[project.id] = project.model_copy(deep=True)
 
