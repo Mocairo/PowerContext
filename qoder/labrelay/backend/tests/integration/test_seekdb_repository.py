@@ -1,7 +1,10 @@
 import os
+from contextlib import closing
 from uuid import uuid4
 
+import pymysql
 import pytest
+from pymysql.cursors import DictCursor
 
 from labrelay.config import LabRelayConfig
 from labrelay.domain.models import (
@@ -157,3 +160,59 @@ async def test_repository_round_trip() -> None:
         await repository.save_asset(
             asset.model_copy(update={"id": f"asset-clash-{suffix}", "checksum": "abc123"})
         )
+
+
+async def test_initialize_upgrades_a_database_created_before_the_handoff_columns() -> None:
+    """A database laid down by the Task 7 schema has no handoff columns yet.
+
+    ``initialize`` must add them idempotently, otherwise the first project write
+    after an upgrade fails with "Unknown column 'handoff_ref'".
+    """
+    suffix = uuid4().hex[:8]
+    database = f"labrelay_upgrade_{suffix}"
+    config = _config().model_copy(update={"seekdb_database": database})
+    with closing(
+        pymysql.connect(
+            host=config.seekdb_host,
+            port=config.seekdb_port,
+            user=config.seekdb_user,
+            password=config.seekdb_password,
+            charset="utf8mb4",
+            cursorclass=DictCursor,
+        )
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4")
+            cursor.execute(f"USE `{database}`")
+            cursor.execute(
+                """
+                CREATE TABLE projects (
+                  id VARCHAR(64) PRIMARY KEY,
+                  title VARCHAR(255) NOT NULL,
+                  research_area VARCHAR(255) NOT NULL,
+                  description TEXT NOT NULL,
+                  project_scope_id VARCHAR(255) NOT NULL,
+                  learner_scope_id VARCHAR(255) NOT NULL,
+                  active_plan_id VARCHAR(64) NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        connection.commit()
+
+    repository = SeekdbRepository.from_config(config)
+    await repository.initialize()
+    await repository.initialize()
+
+    project = Project(
+        id=f"project-{suffix}",
+        title="Upgraded project",
+        research_area="Deep learning",
+        description="A project stored before the handoff columns existed.",
+        project_scope_id=f"project-scope-{suffix}",
+        learner_scope_id=f"learner-scope-{suffix}",
+        handoff_ref='{"family":"handoff","artifact_id":"h1","revision":1}',
+        handoff_receipt_ref='{"name":"handoff-receipt","source_id":"ack-1"}',
+    )
+    await repository.save_project(project)
+    assert await repository.get_project(project.id) == project
