@@ -200,9 +200,10 @@ def _mark_material_gaps(task: LearningTask) -> LearningTask:
     """A baseline that cannot cite code *and* config *and* history is a gap, not a to-do."""
     if task.stage != BASELINE_STAGE:
         return task
-    # A finished task is a fact, not a proposal: Task 11 replans from the rows the learner already
-    # completed, and rewriting ``done``/``skipped`` to ``needs_material`` would edit that history.
-    if task.status in {"done", "skipped"}:
+    # A carried replan row is a fact, not a proposal: its status belongs to the learner's history.
+    # A fresh model-authored ``done``/``skipped`` is not — Task 10 strips it before validation, and
+    # this provenance check is the backstop for any other producer.
+    if task.source_task_id is not None and task.status in {"done", "skipped"}:
         return task
     required = set(stage_required_kinds(BASELINE_STAGE))
     present = {citation.kind for citation in task.citations}

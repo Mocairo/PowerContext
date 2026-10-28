@@ -9,9 +9,10 @@ silently empty search — and every failure a route raises is described by a cod
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from labrelay.domain.assessment import (
     MAX_HOURS_PER_WEEK,
@@ -29,6 +30,11 @@ DEFAULT_SEARCH_LIMIT = 12
 #: Every identifier column in ``src/labrelay/seekdb/schema.sql`` is a VARCHAR(64), so a body
 #: field that names a stored row is capped at the same width instead of failing at the store.
 MAX_REFERENCE_ID_LENGTH = 64
+
+#: A completion is a small record, not an upload. Bounding the open mapping keeps one request from
+#: writing an unbounded append-only TaskEvent.
+MAX_EVIDENCE_BYTES = 64 * 1024
+MAX_EVIDENCE_KEYS = 32
 
 
 class CreateProjectRequest(BaseModel):
@@ -96,6 +102,18 @@ class TaskUpdateRequest(BaseModel):
 
     status: TaskStatus
     evidence: dict[str, Any] | None = None
+
+    @field_validator("evidence")
+    @classmethod
+    def bound_evidence(cls, evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+        if evidence is None:
+            return None
+        if len(evidence) > MAX_EVIDENCE_KEYS:
+            raise ValueError(f"evidence may contain at most {MAX_EVIDENCE_KEYS} keys")
+        encoded = json.dumps(evidence, ensure_ascii=False, default=str).encode("utf-8")
+        if len(encoded) > MAX_EVIDENCE_BYTES:
+            raise ValueError(f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes")
+        return evidence
 
 
 class ReplanRequest(BaseModel):

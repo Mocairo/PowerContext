@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from labrelay.application.services import LabRelayService
 from labrelay.config import PlannerConfig
 from labrelay.domain.assessment import Assessment, build_assessment
-from labrelay.domain.models import LearningTask, Project
+from labrelay.domain.models import LearningPlan, LearningTask, Project
 from labrelay.importers.assets import import_directory
 from labrelay.model.fake import DeterministicModelGateway
 from labrelay.persistence.memory import InMemoryRepository
@@ -38,7 +38,7 @@ from labrelay.planning.generator import (
     stage_required_kinds,
 )
 from labrelay.planning.stages import STAGE_QUERY_PREFIX, STAGE_REQUIRED_KINDS
-from labrelay.planning.validator import PlanValidationError
+from labrelay.planning.validator import PlanValidationError, validate_plan_sync
 from labrelay.retrieval.in_memory import InMemorySearchEngine
 from tests.helpers_planning import (
     ASSET_KIND_BY_ID,
@@ -677,6 +677,85 @@ async def test_baseline_without_config_and_experiment_stays_a_needs_material_dra
     assert [task.status for task in plan.tasks] == ["locked", "locked", "needs_material"]
     assert (await service.repository.get_plan(plan.id)).status == "draft"
     assert await service.repository.get_active_plan(project.id) is None
+
+
+async def test_a_model_answer_may_flag_its_own_gap_but_never_its_own_progress() -> None:
+    """Review I3: a model may admit it lacks evidence; it may not declare its own progress.
+
+    ``done``/``skipped`` in the answer would be history no learner made: no ``evidence_submitted``
+    event behind it, a completion count already filled in, and a successor chain open on day one.
+    Those statuses are ignored and the domain default stands, while ``needs_material`` stays
+    honoured -- that one is the model reporting a gap, which the validator also re-checks.
+    """
+    service, project, plan = await run_plan(
+        [
+            task_payload("orientation", 0, "ops-1", status="done"),
+            task_payload("paper", 1, "note-1", ("orientation",), status="skipped"),
+            task_payload("lab", 2, "config-1", ("paper",), status="in_progress"),
+        ]
+    )
+
+    assert [task.status for task in plan.tasks] == ["todo", "locked", "locked"]
+    assert await service.repository.get_active_plan(project.id) is not None
+    assert await service.repository.list_events(project.id) == []
+
+
+async def test_a_fabricated_done_baseline_cannot_bypass_the_stage_four_evidence_rule() -> None:
+    """The same fabricated status on a stage-4 task is still a material gap, not a completion."""
+    service, _, plan = await run_plan(
+        [
+            task_payload("orientation", 0, "ops-1", status="done"),
+            task_payload("environment", 2, "config-1", ("orientation",)),
+            task_payload("baseline", 4, "code-1", ("environment",), status="done"),
+        ]
+    )
+
+    assert plan.status == "draft"
+    assert plan.tasks[-1].status == "needs_material"
+
+
+def test_the_material_gap_rule_exempts_only_carried_history() -> None:
+    """``source_task_id`` is what makes a finished row a fact; a claimed status is not."""
+    fresh = LearningTask.model_validate(
+        {
+            **task_payload("baseline-fresh", 4, "code-1", ("orientation",)),
+            "project_id": "project-1",
+            "plan_id": "plan-x",
+            "status": "done",
+        }
+    )
+    carried = LearningTask.model_validate(
+        {
+            **task_payload("baseline-carried", 4, "code-1", ("orientation",)),
+            "project_id": "project-1",
+            "plan_id": "plan-x",
+            "status": "done",
+            "source_task_id": "old-baseline",
+        }
+    )
+    root = LearningTask.model_validate(
+        {
+            **task_payload("orientation", 0, "ops-1"),
+            "project_id": "project-1",
+            "plan_id": "plan-x",
+        }
+    )
+    plan = LearningPlan(
+        id="plan-x",
+        project_id="project-1",
+        version=2,
+        status="draft",
+        assessment_id="assessment-1",
+        tasks=[root, fresh, carried],
+    )
+
+    checked = validate_plan_sync(
+        make_assets(),
+        PlannerConfig(environment_before_experiments=False),
+        plan,
+    )
+
+    assert [task.status for task in checked.tasks] == ["locked", "needs_material", "done"]
 
 
 async def test_a_material_gap_is_logged_with_a_stable_reason(

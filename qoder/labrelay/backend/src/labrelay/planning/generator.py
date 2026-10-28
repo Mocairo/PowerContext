@@ -215,6 +215,10 @@ def _parse_tasks(
         raw_key = _raw_task_key(payload.get("id"), index)
         if raw_key in already_carried:
             continue
+        # A fresh task's status is not the model's to declare: ``done``/``skipped`` would be history
+        # with no evidence event behind it, and ``source_task_id`` is reserved for carried replans.
+        payload.pop("status", None)
+        payload.pop("source_task_id", None)
         # First-seen wins: two model tasks that share a raw id keep the same stored id so the
         # duplicate is reported by the validator, not silently merged apart here.
         stored_id = id_map.setdefault(raw_key, _stored_task_id(namespace, raw_key))

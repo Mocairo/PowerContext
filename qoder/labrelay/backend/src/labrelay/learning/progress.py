@@ -39,6 +39,7 @@ logger = logging.getLogger("labrelay.learning.progress")
 MISSING_EVIDENCE = "missing_evidence"
 SKIP_REQUIRES_CONFIRMATION = "skip_requires_confirmation"
 PREREQUISITES_INCOMPLETE = "prerequisites_incomplete"
+STALE_PLAN = "stale_plan"
 #: The REST layer's answer for a pair of statuses the domain table itself refuses; the three above
 #: are the writes this module refuses on top of a table-legal transition.
 ILLEGAL_TRANSITION = "illegal_transition"
@@ -61,6 +62,7 @@ SKIP_CONFIRMATION_KEYS = ("skip_confirmed_by", "assessment_id")
 
 #: Task 9's ``HandoffDraft`` caps, kept here so a long project cannot outgrow the wire format.
 MAX_HANDOFF_ITEMS = 64
+MAX_HANDOFF_CITATIONS = 64
 
 #: What a progress read asks the Learner Scope for, and how much of it may carry.
 LEARNER_CONTEXT_QUERY = "当前阶段 已完成任务 阻塞原因 下一任务"
@@ -75,9 +77,10 @@ class TaskTransitionRejected(ValueError):
     request-body text reaches it — never model output — so it is safe to log and to quote back.
     """
 
-    def __init__(self, message: str, *, reason: str) -> None:
+    def __init__(self, message: str, *, reason: str, missing_count: int = 0) -> None:
         super().__init__(message)
         self.reason = reason
+        self.missing_count = missing_count
 
 
 class NoActivePlanError(ValueError):
@@ -119,10 +122,12 @@ def check_progress_rule(
             for requirement in task.evidence_requirements
             if not _has_value(payload, requirement)
         ]
-        if missing:
+        has_any = any(_has_value(payload, key) for key in payload)
+        if missing or not has_any:
             raise TaskTransitionRejected(
                 f"completing task {task.id} needs evidence: {', '.join(missing)}",
                 reason=MISSING_EVIDENCE,
+                missing_count=len(missing) or 1,
             )
 
     if status == "skipped":
@@ -282,6 +287,15 @@ def _action_text(task: LearningTask) -> str:
     return f"{task.title}：{task.objective}"
 
 
+def _event_key(task: LearningTask) -> str:
+    """The id this task's history was recorded under.
+
+    A carried replan task is a copy with a new id; its evidence and transition events still name
+    the source task. Reading only the copy's id would make finished work look unevidenced.
+    """
+    return task.source_task_id or task.id
+
+
 def _task_brief(task: LearningTask | None) -> dict[str, Any] | None:
     if task is None:
         return None
@@ -309,25 +323,18 @@ def local_progress_summary(project: Project, plan: LearningPlan, events: list[Ta
     lines = [
         f"项目「{project.title}」本地进度：Plan 版本 {plan.version}，共 {len(plan.tasks)} 个任务。"
     ]
-    if finished:
+    for task in finished:
+        key = _event_key(task)
+        evidence_summary = evidence.get(key, {}).get("summary")
+        skip_reason = skipped_reasons.get(key)
         lines.append(
-            "已完成："
-            + "、".join(
-                f"「{task.title}」"
-                + (
-                    f"（证据：{evidence[task.id].get('summary')}）"
-                    if task.id in evidence and evidence[task.id].get("summary")
-                    else (
-                        f"（跳过依据：{skipped_reasons[task.id]}）"
-                        if task.id in skipped_reasons
-                        else ""
-                    )
-                )
-                for task in finished
+            f"「{task.title}」"
+            + (
+                f"（证据：{evidence_summary}）"
+                if evidence_summary
+                else (f"（跳过依据：{skip_reason}）" if skip_reason else "")
             )
         )
-    else:
-        lines.append("尚无已完成任务。")
     next_task = next_actionable(plan)
     if next_task is not None:
         lines.append(
@@ -361,6 +368,7 @@ def build_learning_context(
     text, source, available = memory
     evidence = evidence_by_task(events)
     blocked_reasons = reasons_by_task(events, "blocked")
+    skipped_reasons = reasons_by_task(events, "skipped")
     next_task = next_actionable(plan)
     finished = [task for task in plan.tasks if task.status in TERMINAL_STATUSES]
     return {
@@ -377,8 +385,10 @@ def build_learning_context(
                 "title": task.title,
                 "stage": task.stage,
                 "status": task.status,
-                "evidence": evidence.get(task.id, {}),
-                "reason": blocked_reasons.get(task.id, "") if task.status == "skipped" else "",
+                "evidence": evidence.get(_event_key(task), {}),
+                "reason": skipped_reasons.get(_event_key(task), "")
+                if task.status == "skipped"
+                else "",
             }
             for task in finished
         ],
@@ -445,15 +455,27 @@ def build_reverse_handoff_draft(
 
     state: list[dict[str, Any]] = []
     for task in finished:
+        key = _event_key(task)
+        citations = task.citations
+        if len(citations) > MAX_HANDOFF_CITATIONS:
+            dropped = len(citations) - MAX_HANDOFF_CITATIONS
+            logger.warning(
+                "citation overflow operation=reverse_handoff_draft project_id=%s task_id=%s "
+                "dropped=%s",
+                project.id,
+                task.id,
+                dropped,
+            )
+            citations = citations[:MAX_HANDOFF_CITATIONS]
         if task.status == "skipped":
-            text = f"已跳过任务「{task.title}」：{skipped_reasons.get(task.id, '经确认跳过')}"
+            text = f"已跳过任务「{task.title}」：{skipped_reasons.get(key, '经确认跳过')}"
         else:
-            summary = evidence.get(task.id, {}).get("summary") or "已提交完成证据"
+            summary = evidence.get(key, {}).get("summary") or "已提交完成证据"
             text = f"已完成任务「{task.title}」，证据：{summary}"
         state.append(
             {
                 "text": text,
-                "citations": [citation.model_dump(mode="json") for citation in task.citations],
+                "citations": [citation.model_dump(mode="json") for citation in citations],
             }
         )
     if not state:
@@ -472,12 +494,19 @@ def build_reverse_handoff_draft(
         if task.status == "needs_material"
     ]
 
+    all_finished = all(task.status in TERMINAL_STATUSES for task in plan.tasks)
     return {
         "objective": f"{project.title} 项目学习接手",
         "state": state[:MAX_HANDOFF_ITEMS],
         "next_action": _action_text(next_task) if next_task is not None else "等待交接人补充资料",
         "omissions": omissions[:MAX_HANDOFF_ITEMS],
-        "disposition": "blocked" if blockers or next_task is None else "continuable",
+        "disposition": (
+            "blocked"
+            if blockers or (next_task is None and not all_finished)
+            else "complete"
+            if all_finished
+            else "continuable"
+        ),
         "provenance": {
             "plan_id": plan.id,
             "plan_version": plan.version,

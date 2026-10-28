@@ -36,7 +36,9 @@ from labrelay.domain.models import (
 from labrelay.domain.ports import ContextGateway, ModelGateway, Repository, SearchEngine, SearchHit
 from labrelay.importers.assets import ImportResult, import_directory
 from labrelay.learning.progress import (
+    STALE_PLAN,
     TERMINAL_STATUSES,
+    TaskTransitionRejected,
     apply_unlocks,
     build_learning_context,
     build_reverse_handoff_draft,
@@ -81,6 +83,10 @@ class ContextServiceUnavailableError(ValueError):
             f"project {project_id} was not created"
         )
         self.project_id = project_id
+
+
+class IllegalTaskTransition(ValueError):
+    """The domain transition table refused this status pair; it is not a dependency failure."""
 
 
 class LabRelayService:
@@ -247,7 +253,7 @@ class LabRelayService:
         if task is None:
             raise KeyError(task_id)
         if status not in ALLOWED_TASK_TRANSITIONS[task.status]:
-            raise ValueError(f"Cannot transition from {task.status} to {status}")
+            raise IllegalTaskTransition(f"Cannot transition from {task.status} to {status}")
 
         updated = task.model_copy(update={"status": status})
         await self.repository.save_task(updated)
@@ -288,12 +294,23 @@ class LabRelayService:
         task = await self.repository.get_task(task_id)
         if task is None:
             raise KeyError(task_id)
+        project = await self.repository.get_project(task.project_id)
+        if project is None or project.active_plan_id != task.plan_id:
+            raise TaskTransitionRejected(
+                "This task belongs to a plan that is no longer active.",
+                reason=STALE_PLAN,
+            )
         plan = await self.repository.get_plan(task.plan_id)
         check_progress_rule(task, status, evidence, plan)
 
-        updated = await self.update_task_status(task_id, status, evidence)
-        if status == "done" and evidence:
-            await record_evidence(self.repository, updated, evidence)
+        status_meta = {
+            key: value
+            for key, value in (evidence or {}).items()
+            if key in {"reason", "skip_confirmed_by", "assessment_id"}
+        }
+        updated = await self.update_task_status(task_id, status, status_meta)
+        if status == "done":
+            await record_evidence(self.repository, updated, evidence or {})
         if status in TERMINAL_STATUSES:
             # Re-read the plan: the transition above rewrote the row this pass reads.
             refreshed = await self.repository.get_plan(updated.plan_id)

@@ -28,15 +28,18 @@ from powercontext.http import ArtifactReference, HandoffContent, PreparedHandoff
 
 from labrelay.api.errors import REQUEST_ID_HEADER
 from labrelay.api.main import create_app_with_service
+from labrelay.api.schemas import MAX_EVIDENCE_BYTES, MAX_EVIDENCE_KEYS
 from labrelay.application.handoff import HandoffDraft, HandoffService
-from labrelay.application.services import LabRelayService
+from labrelay.application.services import IllegalTaskTransition, LabRelayService
 from labrelay.config import PlannerConfig
 from labrelay.context.powercontext import PowerContextUnavailableError
 from labrelay.domain.models import LearningPlan, LearningTask, Project
 from labrelay.learning.progress import (
+    MAX_HANDOFF_CITATIONS,
     MISSING_EVIDENCE,
     PREREQUISITES_INCOMPLETE,
     SKIP_REQUIRES_CONFIRMATION,
+    STALE_PLAN,
     TaskTransitionRejected,
 )
 from labrelay.persistence.memory import InMemoryRepository
@@ -54,6 +57,8 @@ from tests.helpers_planning import (
 PLAN_ID = "plan-1"
 ASSESSMENT_ID = "assessment-1"
 SERVICE_LOGGER = "labrelay.application.services"
+ROUTES_LOGGER = "labrelay.api.routes"
+PROGRESS_LOGGER = "labrelay.learning.progress"
 EVIDENCE = {"summary": "已复述规则"}
 
 
@@ -588,7 +593,11 @@ async def test_patch_task_updates_progress_and_reports_rejections() -> None:
     assert empty.status_code == 409
     error = empty.json()["error"]
     assert error["code"] == "task_update_rejected"
-    assert error["details"] == {"task_id": "task-1", "reason": MISSING_EVIDENCE}
+    assert error["details"] == {
+        "task_id": "task-1",
+        "reason": MISSING_EVIDENCE,
+        "missing_count": 1,
+    }
     assert finished.status_code == 200 and finished.json()["status"] == "done"
     assert recovered.json()["next_task"]["id"] == "task-2"
     assert missing.status_code == 404
@@ -764,3 +773,345 @@ async def test_reverse_handoff_draft_needs_a_handoff_service_to_commit() -> None
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "service_not_configured"
+
+
+# --- C1: progress writes stay on the active plan ---------------------------------
+
+
+async def test_the_same_task_id_is_writable_until_its_plan_is_superseded() -> None:
+    """Before/after the replan: the row stops being a progress target, not a row in the store."""
+    service = await build_service()
+    await complete_first(service)
+
+    started = await service.update_task("task-2", "in_progress")
+    assert started.status == "in_progress"
+
+    await service.replan_project(PROJECT_ID, "补排障任务")
+
+    with pytest.raises(TaskTransitionRejected) as failure:
+        await service.update_task("task-2", "blocked", {"reason": "缺 GPU"})
+
+    assert failure.value.reason == STALE_PLAN
+
+
+async def test_a_write_to_a_superseded_task_is_refused_and_writes_nothing() -> None:
+    """Fail-closed: no source-task mapping is followed, so a stale id can never extend history."""
+    service = await build_service()
+    await complete_first(service)
+    plan = await service.replan_project(PROJECT_ID, "补排障任务")
+    before = await service.repository.list_events(PROJECT_ID)
+
+    with pytest.raises(TaskTransitionRejected) as failure:
+        await service.update_task("task-2", "in_progress")
+
+    assert failure.value.reason == STALE_PLAN
+    assert (await service.repository.get_task("task-2")).status == "todo"
+    assert await service.repository.list_events(PROJECT_ID) == before
+    # The active version is exactly what the replan wrote; nothing slipped through the old id.
+    assert [task.status for task in (await service.repository.get_plan(plan.id)).tasks] == [
+        "done",
+        "todo",
+        "locked",
+    ]
+
+
+async def test_the_row_the_active_plan_carries_is_the_one_a_learner_writes() -> None:
+    """The copy is the live row: its own new evidence and its carried source evidence both read."""
+    service = await build_service()
+    await complete_first(service)
+    plan = await service.replan_project(PROJECT_ID, "补排障任务")
+    carried, checkpoint = plan.tasks[0], plan.tasks[1]
+    assert (carried.source_task_id, checkpoint.status) == ("task-1", "todo")
+
+    await service.update_task(checkpoint.id, "in_progress")
+    finished = await service.update_task(checkpoint.id, "done", {"summary": "跑通排障"})
+
+    assert finished.status == "done"
+    recovered = await service.learning_context(PROJECT_ID)
+    evidence = {item["task_id"]: item["evidence"] for item in recovered["completed"]}
+    assert evidence[carried.id] == EVIDENCE
+    assert evidence[checkpoint.id] == {"summary": "跑通排障"}
+
+
+async def test_patch_task_refuses_a_superseded_task_over_http() -> None:
+    service = await build_service()
+    await complete_first(service)
+
+    async with client_for(service) as client:
+        replanned = await client.post(
+            f"/api/projects/{PROJECT_ID}/plans/replan", json={"reason": "补排障任务"}
+        )
+        refused = await client.patch("/api/tasks/task-2", json={"status": "in_progress"})
+        other = await client.patch("/api/tasks/task-3", json={"status": "todo"})
+
+    assert replanned.status_code == 201, replanned.text
+    assert refused.status_code == 409
+    error = refused.json()["error"]
+    assert error["code"] == "task_update_rejected"
+    assert error["details"] == {"task_id": "task-2", "reason": STALE_PLAN, "missing_count": 0}
+    # A stable answer: the same words for any stale id, and no stored identifier in the message.
+    assert other.json()["error"]["message"] == error["message"]
+    assert PLAN_ID not in error["message"]
+    assert (await service.repository.get_task("task-2")).status == "todo"
+
+
+# --- I1: history reads follow a carried task back to its source events -----------
+
+
+async def test_a_recovered_context_reads_carried_work_through_its_source_events() -> None:
+    service = await build_service()
+    await complete_first(service)
+    await service.update_task("task-2", "in_progress")
+    await service.update_task("task-2", "skipped", {"reason": "已有基础", "skip_confirmed_by": "x"})
+
+    await service.replan_project(PROJECT_ID, "补排障任务")
+    recovered = await service.learning_context(PROJECT_ID)
+
+    assert recovered["plan_version"] == 2
+    done_item, skipped_item = recovered["completed"]
+    assert done_item["evidence"] == EVIDENCE
+    assert skipped_item["status"] == "skipped"
+    # I2 as well: a skip reason is read from the skip event, never from a blocked one.
+    assert skipped_item["reason"] == "已有基础"
+    assert recovered["blockers"] == []
+    assert "已复述规则" in recovered["memory_summary"]
+    assert "已有基础" in recovered["memory_summary"]
+
+
+async def test_a_reverse_draft_after_a_replan_still_names_the_evidence_and_the_skip() -> None:
+    service = await build_service()
+    await complete_first(service)
+    await service.update_task("task-2", "in_progress")
+    await service.update_task("task-2", "skipped", {"reason": "已有基础", "skip_confirmed_by": "x"})
+
+    await service.replan_project(PROJECT_ID, "补排障任务")
+    draft = await service.reverse_handoff_draft(PROJECT_ID)
+
+    assert any(
+        "已完成任务" in item["text"] and "已复述规则" in item["text"] for item in draft["state"]
+    )
+    assert any(
+        "已跳过任务" in item["text"] and "已有基础" in item["text"] for item in draft["state"]
+    )
+    assert not any("未说明" in item["text"] for item in draft["state"])
+    assert HandoffDraft.model_validate(draft).state
+
+
+# --- I2: a skip reason is not a block reason ------------------------------------
+
+
+async def test_a_skip_reason_is_never_reported_as_a_block_reason() -> None:
+    service = await build_service()
+    await complete_first(service)
+    await service.update_task("task-2", "in_progress")
+    await service.update_task("task-2", "skipped", {"reason": "已掌握", "skip_confirmed_by": "x"})
+    await service.update_task("task-3", "in_progress")
+    await service.update_task("task-3", "blocked", {"reason": "缺 GPU"})
+
+    recovered = await service.learning_context(PROJECT_ID)
+    by_status = {item["status"]: item for item in recovered["completed"]}
+
+    assert by_status["skipped"]["reason"] == "已掌握"
+    assert by_status["done"]["reason"] == ""
+    assert recovered["blockers"][0]["reason"] == "缺 GPU"
+
+    draft = await service.reverse_handoff_draft(PROJECT_ID)
+    assert any("已掌握" in item["text"] for item in draft["state"])
+    assert draft["omissions"] == ["任务「任务 task-3」受阻：缺 GPU"]
+
+
+# --- I4: a completion always points at something, and always records it ----------
+
+
+@pytest.mark.parametrize("evidence", [None, {}, {"summary": "   "}])
+async def test_a_completion_needs_one_non_empty_value_even_with_no_declared_requirements(
+    evidence: dict[str, Any] | None,
+) -> None:
+    service = await build_service(
+        tasks=[make_task("task-1", 0, (), status="in_progress", evidence_requirements=[])]
+    )
+
+    with pytest.raises(TaskTransitionRejected) as failure:
+        await service.update_task("task-1", "done", evidence)
+
+    assert failure.value.reason == MISSING_EVIDENCE
+    assert await service.repository.list_events(PROJECT_ID) == []
+
+    done = await service.update_task("task-1", "done", {"note": "口述了要点"})
+
+    events = await service.repository.list_events(PROJECT_ID)
+    assert done.status == "done"
+    assert [event.event_type for event in events] == ["status_changed", "evidence_submitted"]
+    assert events[1].payload["evidence"] == {"note": "口述了要点"}
+
+
+async def test_a_completion_records_its_evidence_once() -> None:
+    """The transition is history; the evidence lives in exactly one append-only record."""
+    service = await build_service(tasks=[make_task("task-1", 0, (), status="in_progress")])
+
+    await service.update_task("task-1", "done", dict(EVIDENCE))
+
+    status_changed, submitted = await service.repository.list_events(PROJECT_ID)
+    assert status_changed.event_type == "status_changed"
+    assert status_changed.payload == {"from": "in_progress", "to": "done"}
+    assert submitted.event_type == "evidence_submitted"
+    assert submitted.payload == {"task_id": "task-1", "evidence": EVIDENCE}
+
+
+# --- I5: a refusal body says nothing the model wrote -----------------------------
+
+
+async def test_a_refusal_body_carries_no_stored_text_and_the_log_stays_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Evidence keys are model-authored plan text, so they reach neither body nor log line."""
+    service = await build_service(
+        tasks=[
+            make_task(
+                "task-1", 0, (), status="in_progress", evidence_requirements=["模型编造的指标名"]
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger=ROUTES_LOGGER):
+        async with client_for(service) as client:
+            response = await client.patch("/api/tasks/task-1", json={"status": "done"})
+
+    error = response.json()["error"]
+    assert error["details"] == {
+        "task_id": "task-1",
+        "reason": MISSING_EVIDENCE,
+        "missing_count": 1,
+    }
+    assert "模型编造的指标名" not in response.text
+    assert "任务 task-1" not in response.text
+    assert "模型编造的指标名" not in caplog.text
+    assert f"reason={MISSING_EVIDENCE}" in caplog.text
+
+
+# --- M1: the evidence body is bounded and stored once ----------------------------
+
+
+async def test_an_oversized_evidence_body_never_reaches_the_store() -> None:
+    service = await build_service()
+    huge = {"summary": "x" * (MAX_EVIDENCE_BYTES + 1)}
+    many = {f"key-{index}": "v" for index in range(MAX_EVIDENCE_KEYS + 1)}
+
+    async with client_for(service) as client:
+        oversized = await client.patch(
+            "/api/tasks/task-1", json={"status": "done", "evidence": huge}
+        )
+        too_many = await client.patch(
+            "/api/tasks/task-1", json={"status": "done", "evidence": many}
+        )
+
+    assert oversized.status_code == 422
+    assert oversized.json()["error"]["code"] == "validation_failed"
+    assert too_many.status_code == 422
+    assert await service.repository.list_events(PROJECT_ID) == []
+
+
+# --- M2: only the transition table answers a conflict ----------------------------
+
+
+class UnrelatedProgressFailure(LabRelayService):
+    """A dependency bug inside a progress write: not bad input, and not a learner conflict."""
+
+    async def update_task(
+        self, task_id: str, status: str, evidence: dict[str, Any] | None = None
+    ) -> LearningTask:
+        raise ValueError("a driver raised this from inside the store")
+
+
+async def test_an_unrelated_value_error_is_a_server_error_not_a_conflict() -> None:
+    service = await build_service()
+    broken = UnrelatedProgressFailure(
+        service.repository, service.engine, service.context, service.model, service.planner_config
+    )
+
+    async with client_for(broken) as client:
+        response = await client.patch("/api/tasks/task-1", json={"status": "in_progress"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+
+
+async def test_a_transition_the_table_refuses_still_answers_a_stable_conflict() -> None:
+    service = await build_service(tasks=[make_task("task-1", 0, (), status="todo")])
+
+    with pytest.raises(IllegalTaskTransition):
+        await service.update_task("task-1", "done", dict(EVIDENCE))
+
+    async with client_for(service) as client:
+        response = await client.patch(
+            "/api/tasks/task-1", json={"status": "done", "evidence": dict(EVIDENCE)}
+        )
+
+    error = response.json()["error"]
+    assert response.status_code == 409
+    assert error["details"] == {
+        "task_id": "task-1",
+        "reason": "illegal_transition",
+        "missing_count": 0,
+    }
+    assert "Cannot transition" not in error["message"]
+
+
+# --- M3/M4: the reverse draft survives a finished plan and a long citation list --
+
+
+async def test_a_finished_plan_is_handed_over_as_complete_not_blocked() -> None:
+    service = await build_service(tasks=[make_task("task-1", 0, (), status="todo")])
+    await service.update_task("task-1", "in_progress")
+    await service.update_task("task-1", "done", dict(EVIDENCE))
+
+    draft = await service.reverse_handoff_draft(PROJECT_ID)
+
+    assert draft["disposition"] == "complete"
+    assert HandoffDraft.model_validate(draft).disposition == "complete"
+    # A chain nobody can reach is still reported honestly.
+    stuck = await build_service(tasks=[make_task("task-2", 1, ("task-1",), status="locked")])
+    assert (await stuck.reverse_handoff_draft(PROJECT_ID))["disposition"] == "blocked"
+
+
+async def test_a_long_citation_list_is_capped_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    service = await build_service(
+        tasks=[
+            make_task("task-1", 0, (), status="todo"),
+            make_task(
+                "task-2",
+                1,
+                ("task-1",),
+                citations=[citation_payload("note-1")] * (MAX_HANDOFF_CITATIONS + 6),
+            ),
+        ]
+    )
+    await service.update_task("task-1", "in_progress")
+    await service.update_task("task-1", "done", dict(EVIDENCE))
+    await service.update_task("task-2", "in_progress")
+    await service.update_task("task-2", "done", {"summary": "读完两章"})
+
+    with caplog.at_level(logging.WARNING, logger=PROGRESS_LOGGER):
+        draft = await service.reverse_handoff_draft(PROJECT_ID)
+
+    assert max(len(item["citations"]) for item in draft["state"]) == MAX_HANDOFF_CITATIONS
+    assert "citation overflow" in caplog.text
+    assert "dropped=6" in caplog.text
+    assert HandoffDraft.model_validate(draft).disposition == "complete"
+
+
+# --- M5: a replan never waits on the memory service ------------------------------
+
+
+async def test_a_replan_answers_even_when_the_memory_service_is_down() -> None:
+    """Replanning reads the repository and the model; the 503 branch was never reachable."""
+    service = await build_service(context=DownReadContext())
+    await complete_first(service)
+
+    async with client_for(service) as client:
+        response = await client.post(
+            f"/api/projects/{PROJECT_ID}/plans/replan", json={"reason": "补排障任务"}
+        )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["version"] == 2

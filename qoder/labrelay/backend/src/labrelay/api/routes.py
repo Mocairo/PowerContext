@@ -52,7 +52,11 @@ from labrelay.application.handoff import (
     HandoffService,
     TaskOutcomeRequest,
 )
-from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
+from labrelay.application.services import (
+    ContextServiceUnavailableError,
+    IllegalTaskTransition,
+    LabRelayService,
+)
 from labrelay.context.powercontext import PowerContextUnavailableError
 from labrelay.learning.progress import (
     ILLEGAL_TRANSITION,
@@ -259,10 +263,14 @@ def build_router() -> APIRouter:
             raise ApiError(
                 409,
                 TASK_UPDATE_REJECTED,
-                str(exc),
-                {"task_id": task_id, "reason": exc.reason},
+                "This progress update is not allowed for the current task state.",
+                {
+                    "task_id": task_id,
+                    "reason": exc.reason,
+                    "missing_count": exc.missing_count,
+                },
             ) from None
-        except ValueError as exc:
+        except IllegalTaskTransition as exc:
             # Task 5's transition table: the pair of statuses is simply not a legal move.
             logger.warning(
                 "progress update refused operation=update_task request_id=%s task_id=%s "
@@ -276,7 +284,7 @@ def build_router() -> APIRouter:
                 409,
                 TASK_UPDATE_REJECTED,
                 "This task cannot move to that status from where it is.",
-                {"task_id": task_id, "reason": ILLEGAL_TRANSITION},
+                {"task_id": task_id, "reason": ILLEGAL_TRANSITION, "missing_count": 0},
             ) from None
         return task.model_dump(mode="json")
 
