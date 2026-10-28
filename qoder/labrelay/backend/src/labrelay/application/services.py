@@ -22,6 +22,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from labrelay.config import PlannerConfig
 from labrelay.domain.assessment import Assessment, build_assessment, new_assessment_id
@@ -34,6 +35,18 @@ from labrelay.domain.models import (
 )
 from labrelay.domain.ports import ContextGateway, ModelGateway, Repository, SearchEngine, SearchHit
 from labrelay.importers.assets import ImportResult, import_directory
+from labrelay.learning.progress import (
+    TERMINAL_STATUSES,
+    apply_unlocks,
+    build_learning_context,
+    build_reverse_handoff_draft,
+    check_progress_rule,
+    evidence_by_task,
+    read_learner_memory,
+    record_evidence,
+    require_active_plan,
+)
+from labrelay.learning.replan import activate_replan, build_replanned_plan, replan_summary
 from labrelay.planning.generator import generate_learning_plan
 
 logger = logging.getLogger("labrelay.application.services")
@@ -256,6 +269,101 @@ class LabRelayService:
             if failure is not None:
                 await self._append_memory_sync_failure(updated, failure)
         return updated
+
+    async def update_task(
+        self, task_id: str, status: str, evidence: dict[str, Any] | None = None
+    ) -> LearningTask:
+        """Apply one learner-authored progress write, with the rules the table alone omits.
+
+        :meth:`update_task_status` stays the only writer of a transition, an event and a memory
+        sync; this is the door the API comes through, and it refuses the three writes that would
+        otherwise be legal but meaningless: a completion with none of the evidence the task
+        declared, a skip with no reason and no confirmation behind it, and a locked task opened
+        before its chain is finished. A refusal raises before anything is stored, so the task, the
+        trail and the memory service are all exactly as they were.
+
+        A finished task then opens its own successors — and only those whose every prerequisite is
+        already done or skipped — so a seven-stage path stays walkable one step at a time.
+        """
+        task = await self.repository.get_task(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        plan = await self.repository.get_plan(task.plan_id)
+        check_progress_rule(task, status, evidence, plan)
+
+        updated = await self.update_task_status(task_id, status, evidence)
+        if status == "done" and evidence:
+            await record_evidence(self.repository, updated, evidence)
+        if status in TERMINAL_STATUSES:
+            # Re-read the plan: the transition above rewrote the row this pass reads.
+            refreshed = await self.repository.get_plan(updated.plan_id)
+            if refreshed is not None:
+                await apply_unlocks(self.repository, refreshed, unlocked_by=updated.id)
+        return updated
+
+    async def replan_project(self, project_id: str, reason: str) -> LearningPlan:
+        """Replace the unfinished part of this project's path with a new immutable version.
+
+        The active plan's tasks and its whole event trail are the only sources: what is finished is
+        carried forward untouched into the new version's own id space, what is not is handed to the
+        model, and the result goes through the same validator as a first generation. Nothing is
+        written until the new version is accepted, so a rejection leaves the project planning
+        exactly where it was (spec 16.3, FR-PLN-009).
+        """
+        project = await self.repository.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        source = await require_active_plan(self.repository, project.id)
+        events = await self.repository.list_events(project.id)
+        plan = await build_replanned_plan(
+            repository=self.repository,
+            engine=self.engine,
+            model=self.model,
+            config=self.planner_config,
+            project=project,
+            source=source,
+            reason=reason,
+            evidence=evidence_by_task(events),
+            events=events,
+        )
+        activated = await activate_replan(self.repository, plan, project)
+        await self._remember(
+            project.learner_scope_id,
+            PROGRESS_KIND,
+            replan_summary(activated),
+            reason=f"replan:{activated.id}",
+            project_id=project.id,
+        )
+        return activated
+
+    async def learning_context(self, project_id: str) -> dict[str, Any]:
+        """Answer 「where was I?」 for a new session: stage, next task, progress, blockers.
+
+        The facts come from the repository; the Learner Scope only decides how they are phrased,
+        and :func:`~labrelay.learning.progress.read_learner_memory` reports which of the two it
+        got, so the UI can say 「记忆未同步」 instead of implying the learner never got that
+        far (FR-PRG-005).
+        """
+        project = await self.repository.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        plan = await require_active_plan(self.repository, project.id)
+        events = await self.repository.list_events(project.id)
+        memory = await read_learner_memory(self.context, project)
+        return build_learning_context(project, plan, events, memory)
+
+    async def reverse_handoff_draft(self, project_id: str) -> dict[str, Any]:
+        """Draft the four-field reverse Handoff out of the durable progress record.
+
+        Proposal only: committing it stays Task 9's job, so the learner confirms a draft that says
+        what the events say rather than one the model re-told.
+        """
+        project = await self.repository.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        plan = await require_active_plan(self.repository, project.id)
+        events = await self.repository.list_events(project.id)
+        return build_reverse_handoff_draft(project, plan, events)
 
     async def _sync_progress_memory(self, task: LearningTask) -> str | None:
         """Hand the finished task to learner memory so a new session can recover progress.

@@ -43,6 +43,13 @@ IMPORT_PATH_NOT_DIRECTORY = "import_path_not_directory"
 ASSESSMENT_NOT_FOUND = "assessment_not_found"
 PLAN_NOT_FOUND = "plan_not_found"
 PLAN_VALIDATION_FAILED = "plan_validation_failed"
+# Task 11's three. ``task_update_rejected`` is one code for every progress write the learning
+# rules refuse, with the refused rule in ``details.reason``: the UI shows the same 「现在还不能
+# 这样」 panel whatever the missing half was. ``replan_not_allowed`` is the same idea for a project
+# that has no path to replan.
+TASK_NOT_FOUND = "task_not_found"
+TASK_UPDATE_REJECTED = "task_update_rejected"
+REPLAN_NOT_ALLOWED = "replan_not_allowed"
 DEPENDENCY_UNAVAILABLE = "dependency_unavailable"
 SERVICE_NOT_CONFIGURED = "service_not_configured"
 

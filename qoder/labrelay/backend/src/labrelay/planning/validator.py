@@ -200,6 +200,10 @@ def _mark_material_gaps(task: LearningTask) -> LearningTask:
     """A baseline that cannot cite code *and* config *and* history is a gap, not a to-do."""
     if task.stage != BASELINE_STAGE:
         return task
+    # A finished task is a fact, not a proposal: Task 11 replans from the rows the learner already
+    # completed, and rewriting ``done``/``skipped`` to ``needs_material`` would edit that history.
+    if task.status in {"done", "skipped"}:
+        return task
     required = set(stage_required_kinds(BASELINE_STAGE))
     present = {citation.kind for citation in task.citations}
     if required.issubset(present):

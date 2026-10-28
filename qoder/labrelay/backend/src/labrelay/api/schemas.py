@@ -9,6 +9,8 @@ silently empty search — and every failure a route raises is described by a cod
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from labrelay.domain.assessment import (
@@ -19,7 +21,7 @@ from labrelay.domain.assessment import (
     ReproductionLevel,
     Target,
 )
-from labrelay.domain.models import AssetKind
+from labrelay.domain.models import AssetKind, TaskStatus
 
 # ``configs/retrieval.yaml`` owns the result budget; the pinned test keeps the two in step.
 DEFAULT_SEARCH_LIMIT = 12
@@ -78,3 +80,32 @@ class GeneratePlanRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     assessment_id: str = Field(min_length=1, max_length=MAX_REFERENCE_ID_LENGTH)
+
+
+class TaskUpdateRequest(BaseModel):
+    """One learner-authored progress write: the new status plus whatever proves it.
+
+    ``status`` is the domain literal, so a status the model can never hold (``archived``) is a 422
+    naming the field rather than a transition the service has to refuse. ``evidence`` is
+    deliberately an open mapping: what a completion needs is declared by the task itself
+    (``LearningTask.evidence_requirements``), and the same body carries a skip's reason and
+    confirmation. Which keys are required is Task 11's rule, checked against the stored task.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    status: TaskStatus
+    evidence: dict[str, Any] | None = None
+
+
+class ReplanRequest(BaseModel):
+    """Ask for a new plan version, saying why.
+
+    The reason is required: it is the one part of a replan the system cannot infer, it travels in
+    the model payload, and a path that changed for no recorded reason is the thing spec 16.2 rules
+    out.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1, max_length=2000)

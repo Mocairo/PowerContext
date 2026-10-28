@@ -84,6 +84,9 @@ class LearningTask(BaseModel):
     evidence_requirements: list[str] = ["summary"]
     status: TaskStatus = "locked"
     task_type: Literal["citation_required", "self_assessment"] = "citation_required"
+    #: Set by Task 11's replanning only: the id of the finished task this row copies, so the new
+    #: plan version can show past progress without reusing (and so overwriting) the original row.
+    source_task_id: str | None = None
 
     @model_validator(mode="after")
     def require_citation(self) -> LearningTask:

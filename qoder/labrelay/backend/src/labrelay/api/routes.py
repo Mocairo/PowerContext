@@ -1,14 +1,16 @@
-"""The routes the offline API answers on: projects, evidence, retrieval, Handoff, plans.
+"""The routes the offline API answers on: projects, evidence, retrieval, Handoff, plans, progress.
 
 Each handler is a call into :class:`labrelay.application.services.LabRelayService` plus the
 mapping from a service outcome to an HTTP answer — nothing else. Decisions about what an import
-persists, which evidence is searchable and what a memory failure costs belong to Tasks 3-5, and
-the responses keep the observability those tasks produced: ``ImportResult`` travels as it is, with
-``restricted`` and ``restricted_reasons``, so an operator can see how much evidence was withheld
-from the index and why without any file content crossing the wire.
+persists, which evidence is searchable, what a memory failure costs and which progress write is
+legal belong to Tasks 3-5 and 9-11, and the responses keep the observability those tasks
+produced: ``ImportResult`` travels as it is, with ``restricted`` and ``restricted_reasons``, so an
+operator can see how much evidence was withheld from the index and why without any file content
+crossing the wire.
 
-Tasks, replanning and the question endpoint arrive with Tasks 11-13; this router declares only
-what the in-memory service can already answer.
+Task 11 added the learner-facing half: ``PATCH /api/tasks/{id}``, the replan call, the
+``learning-context`` recovery read and the reverse Handoff draft. The question endpoint and the
+export page arrive with Tasks 12 and 13.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from labrelay.api.errors import (
     IMPORT_PATH_NOT_DIRECTORY,
     PLAN_NOT_FOUND,
     PLAN_VALIDATION_FAILED,
+    REPLAN_NOT_ALLOWED,
+    TASK_NOT_FOUND,
+    TASK_UPDATE_REJECTED,
     ApiError,
     request_id_of,
 )
@@ -35,7 +40,9 @@ from labrelay.api.schemas import (
     CreateProjectRequest,
     GeneratePlanRequest,
     ImportRequest,
+    ReplanRequest,
     SearchRequest,
+    TaskUpdateRequest,
 )
 from labrelay.application.handoff import (
     HandoffAcknowledgementRequest,
@@ -47,6 +54,11 @@ from labrelay.application.handoff import (
 )
 from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
 from labrelay.context.powercontext import PowerContextUnavailableError
+from labrelay.learning.progress import (
+    ILLEGAL_TRANSITION,
+    NoActivePlanError,
+    TaskTransitionRejected,
+)
 from labrelay.planning.validator import PlanValidationError
 
 logger = logging.getLogger("labrelay.api.routes")
@@ -214,6 +226,173 @@ def build_router() -> APIRouter:
                 {"plan_id": plan_id},
             )
         return plan.model_dump(mode="json")
+
+    @router.patch("/tasks/{task_id}")
+    async def update_task(
+        task_id: str,
+        payload: TaskUpdateRequest,
+        service: ServiceDep,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Record one piece of progress: a start, a completion with evidence, a block, a skip.
+
+        The status travels as the domain literal, so an invented one is FastAPI's 422 and never
+        reaches the store. Everything else is a refusal about *state*, and answers 409 with the rule
+        in ``details.reason`` — the learner sees which half was missing without this route having to
+        repeat the task's evidence requirements back at it.
+        """
+        try:
+            task = await service.update_task(task_id, payload.status, payload.evidence)
+        except KeyError:
+            # Same answer as an unknown plan: the id may exist in another project's namespace, and
+            # confirming that would publish somebody else's identifier space (spec 19.1).
+            raise ApiError(
+                404, TASK_NOT_FOUND, f"Task {task_id} does not exist.", {"task_id": task_id}
+            ) from None
+        except TaskTransitionRejected as exc:
+            logger.warning(
+                "progress update refused operation=update_task request_id=%s task_id=%s reason=%s",
+                request_id_of(request),
+                task_id,
+                exc.reason,
+            )
+            raise ApiError(
+                409,
+                TASK_UPDATE_REJECTED,
+                str(exc),
+                {"task_id": task_id, "reason": exc.reason},
+            ) from None
+        except ValueError as exc:
+            # Task 5's transition table: the pair of statuses is simply not a legal move.
+            logger.warning(
+                "progress update refused operation=update_task request_id=%s task_id=%s "
+                "reason=%s exception_class=%s",
+                request_id_of(request),
+                task_id,
+                ILLEGAL_TRANSITION,
+                type(exc).__name__,
+            )
+            raise ApiError(
+                409,
+                TASK_UPDATE_REJECTED,
+                "This task cannot move to that status from where it is.",
+                {"task_id": task_id, "reason": ILLEGAL_TRANSITION},
+            ) from None
+        return task.model_dump(mode="json")
+
+    @router.post("/projects/{project_id}/plans/replan", status_code=201)
+    async def replan_plan(
+        project_id: str,
+        payload: ReplanRequest,
+        service: ServiceDep,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Replace the unfinished part of the path with the next immutable plan version."""
+        project = await ensure_project(service, project_id)
+        try:
+            plan = await service.replan_project(project.id, payload.reason)
+        except NoActivePlanError:
+            raise ApiError(
+                409,
+                REPLAN_NOT_ALLOWED,
+                f"Project {project.id} has no active plan to replan.",
+                {"project_id": project.id},
+            ) from None
+        except PlanValidationError as exc:
+            # The model's remainder is not a plan. Nothing was written: the active version, its
+            # tasks and its whole event trail are still what the learner was working on.
+            logger.warning(
+                "replan rejected operation=replan_plan request_id=%s project_id=%s reason=%s",
+                request_id_of(request),
+                project.id,
+                exc.reason,
+            )
+            raise ApiError(
+                422,
+                PLAN_VALIDATION_FAILED,
+                "The replanned tasks did not pass validation.",
+                {"reason": exc.reason, "project_id": project.id},
+            ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
+        return plan.model_dump(mode="json")
+
+    @router.get("/projects/{project_id}/learning-context")
+    async def learning_context(
+        project_id: str, service: ServiceDep, request: Request
+    ) -> dict[str, Any]:
+        """Where a new session picks up: stage, next task, finished work, blockers, and the note.
+
+        Always a 200 when the project has a plan, memory reachable or not — the facts come from the
+        repository, and ``memory_source`` / ``memory_available`` say how much of the prose behind
+        them was actually recovered (FR-PRG-003, FR-PRG-005).
+        """
+        project = await ensure_project(service, project_id)
+        try:
+            return await service.learning_context(project.id)
+        except NoActivePlanError:
+            logger.info(
+                "no active plan operation=learning_context request_id=%s project_id=%s",
+                request_id_of(request),
+                project.id,
+            )
+            raise ApiError(
+                404,
+                PLAN_NOT_FOUND,
+                f"Project {project.id} has no active plan yet.",
+                {"project_id": project.id},
+            ) from None
+
+    @router.post("/projects/{project_id}/handoff/draft")
+    async def reverse_handoff_draft(
+        project_id: str,
+        service: ServiceDep,
+        handoff: HandoffDep,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Draft the reverse Handoff from the progress record, and stage it for confirmation.
+
+        This is the one place the four fields are *assembled*; committing them stays Task 9's job.
+        The draft is handed to :meth:`HandoffService.prepare`, which is what makes the existing
+        ``/handoff/confirm`` the only way a PowerContext revision is ever made — a learner confirms
+        what the events say, and no second commit path appears here.
+        """
+        project = await ensure_project(service, project_id)
+        try:
+            draft = await service.reverse_handoff_draft(project.id)
+        except NoActivePlanError:
+            raise ApiError(
+                404,
+                PLAN_NOT_FOUND,
+                f"Project {project.id} has no active plan yet.",
+                {"project_id": project.id},
+            ) from None
+        provenance = dict(draft.get("provenance") or {})
+        body = {key: value for key, value in draft.items() if key != "provenance"}
+        try:
+            validated = HandoffDraft.model_validate(body)
+        except ValueError as exc:
+            # Stored progress that cannot be phrased as a draft is a readiness problem, not a bug:
+            # only the exception class is logged, since the message quotes the stored text.
+            logger.warning(
+                "reverse draft refused operation=reverse_handoff_draft request_id=%s project_id=%s "
+                "exception_class=%s",
+                request_id_of(request),
+                project.id,
+                type(exc).__name__,
+            )
+            raise ApiError(
+                409,
+                HANDOFF_NOT_READY,
+                "The recorded progress cannot be phrased as a Handoff draft yet.",
+                {"project_id": project.id},
+            ) from None
+        preview = await handoff.prepare(project.id, validated)
+        return {
+            "draft_id": preview.draft_id,
+            "draft": validated.model_dump(mode="json"),
+            "provenance": provenance,
+        }
 
     @router.post("/projects/{project_id}/handoff/prepare")
     async def prepare_handoff(

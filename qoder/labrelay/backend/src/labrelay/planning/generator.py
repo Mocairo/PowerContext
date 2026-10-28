@@ -175,7 +175,13 @@ async def _retrieve_stage_evidence(
     return stages
 
 
-def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> list[LearningTask]:
+def _parse_tasks(
+    model_response: object,
+    *,
+    project: Project,
+    plan_id: str,
+    carried: dict[str, str] | None = None,
+) -> list[LearningTask]:
     """Read the model's task list into the domain, with this project's identity written last.
 
     ``project_id`` and ``plan_id`` come from the caller rather than the answer. Crucially, the
@@ -183,6 +189,11 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
     is rewritten through the same mapping: a model that names its tasks ``orientation``, ``paper``
     cannot make two plan versions collide on the primary key, and the id it "used" is only ever an
     input to the mapping, never what gets persisted.
+
+    ``carried`` (Task 11's replanning) pre-seeds that mapping with ``source-plan id -> new id`` for
+    the tasks already finished in the plan being replaced. A model task naming one of them is the
+    same work, already done, so it is dropped rather than duplicated; a prerequisite naming one
+    resolves to the carried row instead of to a task that does not exist in this version.
     """
     raw_tasks = model_response.get("tasks") if isinstance(model_response, dict) else None
     if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -191,8 +202,9 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
         )
 
     namespace = _task_id_namespace(plan_id)
+    already_carried = dict(carried or {})
     entries: list[tuple[dict[str, object], list[object]]] = []
-    id_map: dict[str, str] = {}
+    id_map: dict[str, str] = dict(already_carried)
     for index, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
             raise PlanValidationError(
@@ -201,6 +213,8 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
             )
         payload = dict(entry)
         raw_key = _raw_task_key(payload.get("id"), index)
+        if raw_key in already_carried:
+            continue
         # First-seen wins: two model tasks that share a raw id keep the same stored id so the
         # duplicate is reported by the validator, not silently merged apart here.
         stored_id = id_map.setdefault(raw_key, _stored_task_id(namespace, raw_key))
