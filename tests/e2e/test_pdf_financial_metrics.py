@@ -77,6 +77,14 @@ def test_financial_metric_operands_survive_realistic_discussion_distractors(tmp_
         ("How much free cash flow did Birch generate during 2027?", {b["cash"]}),
         ("Find Birch's net margin for the year 2027.", {b["income"]}),
         ("Estimate the cash operating cycle for Birch in 2027.", {b["income"], b["balance"]}),
+        (
+            "Does Aster operate a capital-intensive business in 2034?",
+            {a["income"], a["balance"], a["cash"]},
+        ),
+        (
+            "Assess Birch's capital intensity using its 2027 financials.",
+            {b["income"], b["balance"], b["cash"]},
+        ),
     ]
     database = tmp_path / "metrics.db"
     (scope,) = asyncio.run(_load(database, (first + second,)))
@@ -104,3 +112,23 @@ def test_financial_metric_operands_survive_realistic_discussion_distractors(tmp_
         })
     )
     assert not failures, failures
+
+
+def test_growth_excluding_acquisitions_retrieves_organic_segment_table(tmp_path):
+    contents = [
+        f"Risk disclosure {i}. Mergers and acquisitions may affect segment growth. "
+        "Integration of acquired companies can be expensive. The acquisition strategy supports business expansion."
+        for i in range(35)
+    ]
+    contents.insert(
+        23,
+        "Segment results\nOrganic sales growth\nIndustrial 8 percent\nConsumer negative 4 percent\n"
+        "Healthcare 3 percent\nChanges exclude acquisitions and divestitures.",
+    )
+    pages = parse_pdf_document(PDFDocumentInput(document_id="5R_2035_10K", content=pdf_bytes(tuple(contents))))
+    database = tmp_path / "organic.db"
+    (scope,) = asyncio.run(_load(database, (pages,)))
+    inspected = asyncio.run(
+        _inspect(database, scope, [("Excluding M&A, which segment reduced 5R's growth in 2035?", 20)])
+    )
+    assert ("5R_2035_10K", 24) in {(doc, page) for doc, _digest, page in inspected["results"][0]}

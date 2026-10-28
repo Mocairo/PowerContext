@@ -21,9 +21,11 @@ import io
 import json
 import logging
 import threading
+import zlib
 
 from pydantic import BaseModel, Field, field_validator
 from pypdf import PdfReader
+from pypdf.filters import decode_stream_data
 from pypdf.generic import (
     ArrayObject,
     ContentStream,
@@ -113,6 +115,52 @@ def _font_resource_name(fonts: DictionaryObject, font: DictionaryObject) -> Name
     return name
 
 
+def _validate_compressed_contents(value: PdfObject | None) -> None:  # noqa: C901 - Validate ordered PDF filter chains.
+    """Reject incomplete Flate streams before pypdf silently returns a prefix."""
+    if value is None:
+        return
+    value = value.get_object()
+    if isinstance(value, ArrayObject):
+        for item in value:
+            _validate_compressed_contents(item)
+        return
+    if not isinstance(value, StreamObject):
+        return  # ContentStream reports invalid non-stream contents.
+    filters = value.get("/Filter", ArrayObject()).get_object()
+    if not isinstance(filters, ArrayObject):
+        filters = ArrayObject([filters])
+    if "/FlateDecode" not in filters and "/Fl" not in filters:
+        return
+    parameters = value.get("/DecodeParms", ArrayObject([DictionaryObject()] * len(filters))).get_object()
+    if is_null_or_none(parameters):
+        parameters = ArrayObject([DictionaryObject()] * len(filters))
+        # pypdf otherwise treats null as a single parameter and skips later filters.
+        value[NameObject("/DecodeParms")] = parameters
+    if not isinstance(parameters, ArrayObject):
+        parameters = ArrayObject([parameters])
+    if len(parameters) != len(filters):
+        raise ValueError("PDF stream filter parameters do not match its filters")  # noqa: TRY003
+    data = value._data
+    for index, (name, parameter) in enumerate(zip(filters, parameters, strict=True)):
+        if name in ("/FlateDecode", "/Fl"):
+            decoder = zlib.decompressobj()
+            pending = data
+            while pending:
+                decoder.decompress(pending, 65_536)
+                pending = decoder.unconsumed_tail
+            if not decoder.eof:
+                raise ValueError("Incomplete PDF Flate content stream")  # noqa: TRY003
+        if index == len(filters) - 1:
+            return
+        # Decode one stage with pypdf so predictors and filter chains retain its
+        # semantics. Validation never replaces pypdf's text extraction.
+        stage = StreamObject()
+        stage._data = data
+        stage[NameObject("/Filter")] = name
+        stage[NameObject("/DecodeParms")] = parameter
+        data = decode_stream_data(stage)
+
+
 def _validate_text_resources(  # noqa: C901 - PDF graphics state and resource operators are checked together.
     contents: ContentStream,
     resources: PdfObject,
@@ -186,6 +234,7 @@ def _validate_text_resources(  # noqa: C901 - PDF graphics state and resource op
             if form["/Subtype"] == "/Form":
                 if id(form) in ancestors:
                     raise ValueError("Cyclic PDF Form XObject")  # noqa: TRY003
+                _validate_compressed_contents(form)
                 form_contents = ContentStream(form, reader, "bytes")
                 form_resources = _validate_text_resources(
                     form_contents,
@@ -236,6 +285,7 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
                 # extract_text can silently treat malformed content as blank.
                 raw_contents = page.get("/Contents")
                 if not is_null_or_none(raw_contents):
+                    _validate_compressed_contents(raw_contents)
                     contents = ContentStream(raw_contents, reader, "bytes")
                     page[NameObject("/Resources")] = _validate_text_resources(
                         contents, page.get("/Resources", DictionaryObject()).get_object(), reader

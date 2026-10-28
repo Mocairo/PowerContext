@@ -11,7 +11,7 @@
 | 页级 CAPTURED Source、稳定修订身份、精确标准投影 | 同上 | Registry resolve/read、observation 序列化、真实 Runtime |
 | 全页入库、重复幂等、重启可读、旧修订回查 | 原生 Source/Runtime/Memory 链路 | 公开测试；自构造真实数据库、跨进程重启 |
 | 通用自然语言检索、scope、limit、不同页与精确 citation | `src/powercontext/sources/_pdf_search.py` | 公开 5 问逐条回查；跨公司、修订、scope 的已知证据测试 |
-| 词频多重集合指标与 evidence-page Recall@20 | 产品自有测试与验证记录 | 自构造可测量；正式 FinanceBench 标注未分发，不声称正式达标 |
+| 词频多重集合指标与 evidence-page Recall@20 | 产品自有测试与验证记录 | 自构造回归及授权离线公开标注验算；指标和限制见 PDF_REPAIR.md |
 | 现有题目兼容、基线与完整 Git 交付 | 本分支 | `check-baseline`、`test-pdf`、最终 `make -C competition test` |
 
 产品运行时仅访问输入 PDF、文档 ID、问题和 scoped Memory 的公开 API，不读取测试资产、答案或标注。已读取[完整语雀题面](https://oceanbase.yuque.com/org-wiki-obtech-vh7w9r/hc3pio/ohy6lqb9wshgmrar)及仓库题面、acceptance 和公开 cases。网页明确公开与留出两组分别满足全部质量门槛；与仓库接口契约无冲突。
@@ -20,7 +20,7 @@
 
 `pdf_pages.py` 提供 `PDFDocumentInput`、`PDFPageInput`、`parse_pdf_document`、`PDF_PAGE_SOURCE_DEFINITION` 和重导出的 `search_pdf_pages`。解析使用比赛固定的 pypdf 6.19.0，直接读取完整输入字节；不做 OCR、不生成金融答案。完整原字节 SHA-256 使用小写十六进制。非空白文档 ID 原样保存，包括合法周边空白。
 
-解析按全部物理页顺序提取，正常空白页返回空文本。先检查文件完整性、页树、字体与 Form 资源，再完成所有页面提取；pypdf 可能静默恢复的错误也会检查，任何失败统一抛出 `ValueError`，无部分返回。支持空用户密码权限、null/继承资源、间接页树对象、旋转文本、Unicode 映射、图形状态字体、Form 文字和无文本扫描页。图形状态与 Form 继承字体只在 reader 内规整为 pypdf 可正确解码的操作，不改变原始输入字节。非空密码文档明确失败。
+解析按全部物理页顺序提取，正常空白页返回空文本。先检查文件完整性、页树、Flate 压缩完整性、字体与 Form 资源，再完成所有页面提取；pypdf 可能静默恢复的错误也会检查，任何失败统一抛出 `ValueError`，无部分返回。支持空用户密码权限、null/继承资源、间接页树对象、旋转文本、Unicode 映射、图形状态字体、Form 文字和无文本扫描页。图形状态与 Form 继承字体只在 reader 内规整为 pypdf 可正确解码的操作，不改变原始输入字节。非空密码文档明确失败。
 
 页级 Source 为原生 `CAPTURED`，完整保存文档 ID、文件摘要、物理页码与正文。Source name 是 `pdf:` 加三元组紧凑 JSON 的 SHA-256，共 68 个 ASCII 字符；编码边界明确，长 ID 不会截断。PDF 任意字节修订产生不同身份。标准投影严格为 `DOCUMENT_ID\nPAGE_TEXT`，metadata 仅含题面要求的三个键。注册、observation、Runtime ingestion、固定文本 pipeline 和 Memory 均使用原生链路。
 
@@ -60,7 +60,7 @@ PYTHONPATH=src:. competition/.venv/bin/python -m tests.validate_pdf_public \
 
 文本指标使用小写 `[a-z]+|\d+` 和 `Counter` 词频多重集合交集。页召回按每问题的不同 `(document_id, physical_page)` 求交后累计分子/分母，多页问题与同页多次标注不混淆。另一个 36 页修订/scope 测试命中 4/4 个已知证据页。
 
-以上均为**自构造回归指标，不是 FinanceBench 官方分数**。公开包未分发冻结每页词项数、证据文本、整页标注和证据页位置；因此正式 5 文档/1151 页/24 问题的四项质量阈值，以及公开 FinanceBench 的同组质量阈值，均无法直接测量。本实现未下载或使用这些标注，也未宣称通过隐藏验收。
+以上表格为**自构造回归指标，不是 FinanceBench 官方分数**。用户另授权使用公开 FinanceBench 标注作独立离线验证：20 份原件共 3523 页、62 个公开问题，具体数据分组、真实检索指标、两个独立小组漏检及 BLOCK 标注 NBSP 差异均见 [PDF_REPAIR.md](PDF_REPAIR.md)。产品运行时不读取标注。正式 1151 页的冻结词项数与平台分组仍未知，不能声称通过隐藏验收。
 
 候选池采用有界多查询召回，存在词汇差异、无显式关键词及大量非 PDF 条目挤占候选的相关性风险。测试说明的是实际执行范围；严格解析没有穷举所有合法 PDF 编码/字体组合。源码和输入运行时均不需要联网。
 
@@ -85,10 +85,10 @@ env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u http
 
 全题测试需要清除**该测试进程**的代理环境变量：宿主默认 SOCKS 代理使固定依赖里的 HTTP 客户端因未安装 `socksio` 而失败；未为此修改依赖或产品。系统代理配置保持原样。
 
-本分支保留第二题 CSV、第三题 Pi、第五题重排、第六题增量上下文、第七题数量触发、第八题 embedding、第九题生命周期、第十题证据选择、第十一题混合检索成果。最终具体计数、命令退出码、完整 commit、推送状态与提测字段记录在配套 `task4-repair-delivery/README.md` 和 `verification.json` 中。
+本分支保留第二题 CSV、第三题 Pi、第五题重排、第六题增量上下文、第七题数量触发、第八题 embedding、第九题生命周期、第十题证据选择、第十一题混合检索成果。最终具体计数、命令退出码、完整 commit、推送状态与提测字段记录在配套 `task4-second-delivery/README.md` 和 `verification.json` 中。
 
 最终 `make -C competition test` 退出 0，全部 **95 passed、0 failed、0 skipped**：CSV 17、Pi 15、PDF 6、重排 10、增量 14、数量触发 17、embedding 8、生命周期 4、证据选择 3、混合检索 1。`check-baseline` 退出 0。
 
-PDF 自有 68 项测试、相关 Source/Memory 165 项回归均通过。额外验证的 5 份原始财报共 1134 页全部入库，重启后逐页回读一致，21 个问题的引用逐条回查通过。另有 240 页、16 个问题的财务指标检索测试，命中 22/22 个已知证据页对；四份真实财报的人工主报表检查命中 20/20。均非官方标注指标，详细范围见 PDF_REPAIR.md。附加容器以断网、1 CPU、2 GiB、512 pids、非 root、源码只读执行 PDF 官方 6 项，全部通过；镜像为固定摘要的 Debian Python 3.12，**不是官方 CentOS 镜像**，不能作为官方平台评分。
+PDF 自有测试已扩展至 101 项，包含压缩流截断、简称、完整标题和客户收入来源回归。此前普通 Source/Memory 行为保持，最终执行计数与日志见配套交付记录。公开五题及额外完整财报均经过真实持久化与逐条引用回查；公开标注验证结果和未达标项见 PDF_REPAIR.md。
 
-本次变更的产品与测试文件 Ruff、格式和固定依赖环境定向 ty 检查通过。仓库全量 precommit 在独立临时副本执行，既有 competition 格式和基线类型问题导致退出 1；普通开发锁文件还未安装比赛固定的 pypdf。使用同一个 competition Python 环境进行全仓库类型对照，前置提测版本 361 条、修复版 361 条，新增诊断 0。没有将全量自动格式化修改带回产品。
+变更文件使用比赛固定依赖进行 Ruff、格式与定向 ty 检查。全量 precommit 在临时克隆中执行；已知官方文件格式和全仓库开发依赖问题单独记录，没有将自动格式化修改带回产品，也未修改官方依赖来规避检查。

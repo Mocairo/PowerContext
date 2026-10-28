@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 from powercontext.artifacts.models import MemoryCitation
@@ -135,6 +136,15 @@ _STOP = frozenset([
     "relying",
     "within",
     "according",
+    "explain",
+    "useful",
+    "metric",
+    "like",
+    "conventional",
+    "meaningful",
+    "roughly",
+    "many",
+    "much",
 ])
 # A small financial vocabulary bridges question wording to ordinary statement headings.
 # These are concepts, not company names, question identifiers, or evidence locations.
@@ -162,7 +172,33 @@ _CONCEPTS = (
     ),
     (("operating income", "operating profit", "ebitda"), ("operating income", "operating profit")),
     (("capex", "capital expenditur"), ("capital expenditures", "additions property plant equipment")),
+    (
+        ("capital intens", "asset intens"),
+        (
+            "capital expenditures",
+            "capital spending",
+            "property plant equipment",
+            "total assets",
+            "net sales",
+            "net revenue",
+            "balance sheets",
+            "statements income",
+            "income statements",
+            "statements operations",
+            "statements cash flows",
+            "cash flows statements",
+        ),
+    ),
+    (("segment", "business unit"), ("segment results", "segment operating", "sales growth")),
+    (
+        ("organic", "m a", "excluding acquisit", "exclude acquisit", "without acquisit", "without merger"),
+        ("organic sales", "organic growth", "acquisitions divestitures"),
+    ),
     (("balance sheet", "financial position"), ("balance sheets", "assets liabilities equity")),
+    (("ppne", "pp e", "ppe"), ("property plant equipment", "balance sheets")),
+    (("customer",), ("customers", "customer", "major customers", "customer concentration")),
+    (("categor", "segment", "business unit"), ("business segment data", "segment information")),
+    (("cyclic",), ("cyclical", "cycles", "cyclicality")),
     (("revenue", "sales"), ("net revenue", "net sales")),
     (("debt", "borrow", "leverage"), ("long term debt", "borrowings interest")),
     (("dividend", "repurchas", "buyback"), ("dividends repurchases", "treasury stock")),
@@ -245,7 +281,9 @@ def _stem(word: str) -> str:
 
 
 def _query_parts(question: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    original = tuple(dict.fromkeys(_terms(question)))
+    # Preserve sequence for names with repeated tokens and names preceded by an
+    # acronym sharing one of their tokens. Deduplication belongs to query weights.
+    original = _terms(question)
     normalized = " ".join(_WORD.findall(question.lower()))
     expansions = tuple(
         dict.fromkeys(
@@ -258,30 +296,109 @@ def _query_parts(question: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return original, expansions
 
 
-def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[str, ...]) -> list[MemoryHit]:
-    document_words = [
-        tuple(term for term in _terms(hit.text.partition("\n")[0]) if term not in {"10", "k", "q", "annual"})
-        for hit in hits
-    ]
-    # Join whole query tokens, never substrings: "Coca-Cola" can match COCACOLA,
-    # but "technical" must not select a document named TECH. Unrecognized labels
-    # retain the ordinary lexical ranking, including documents with opaque IDs.
+def _document_words(document_id: str) -> tuple[str, ...]:
+    return tuple(term for term in _terms(document_id) if term not in {"10", "k", "q", "annual", "report", "form"})
+
+
+def _named_documents(hits: list[MemoryHit], original: tuple[str, ...]) -> set[str]:
     query_names = {
         "".join(original[start:end]) for start in range(len(original)) for end in range(start + 1, len(original) + 1)
     }
-    document_names = [
-        "".join(term for term in words if not (term.isdigit() and len(term) == 4)) for words in document_words
-    ]
-    named_documents = [bool(name) and name in query_names for name in document_names]
+    patterns: dict[str, re.Pattern[str]] = {}
+    matched: set[str] = set()
+    for hit in hits:
+        document_id, _, body = hit.text.partition("\n")
+        name = "".join(term for term in _document_words(document_id) if not (term.isdigit() and len(term) == 4))
+        if not name:
+            continue
+        if name in query_names:
+            matched.add(document_id)
+            continue
+        if document_id not in patterns:
+            # A declaration must name this issuer; a competitor's alias is not
+            # evidence about the owning document. Spacing in IDs is optional.
+            patterns[document_id] = re.compile(
+                r"\b"
+                + r"[\W_]*".join(map(re.escape, name))
+                + r"\b(?:\s+(?:Company|Corporation|Inc\.?|Co\.?|Limited|Ltd\.?|PLC))*"
+                + r"\s*\(\s*[“\"']?([a-zA-Z][a-zA-Z0-9&. -]{1,30})[”\"']?\s*\)",
+                re.IGNORECASE,
+            )
+        aliases = {"".join(_terms(match.group(1))) for match in patterns[document_id].finditer(body)}
+        aliases.update(
+            match.group(1).lower().rstrip(".")
+            for match in re.finditer(
+                r"\bThe Company[’']s (?:Common Stock|shares)\b[^.\n]{0,180}"  # noqa: RUF001 - PDF smart quotes.
+                r"\bsymbol\s+[“\"']?([A-Z][A-Z0-9.]{0,8})\b",
+                body,
+            )
+        )
+        if (aliases - {"company", "corporation", "inc", "co", "group", "us", "registrant"}) & query_names:
+            matched.add(document_id)
+    return matched
+
+
+def _statement_title(text: str) -> bool:
+    lines = text.splitlines()[:12]
+    titles = [*lines, *(f"{left} {right}" for left, right in pairwise(lines))]
+    # Match a complete title, including a wrapped title, rather than an audit
+    # paragraph or note that merely refers to the consolidated statements.
+    pattern = (
+        r"(?:(?:consolidated|combined|condensed) )+"
+        r"(?:statement (?:income|earning|operation|cash flow|financial position)"
+        r"|(?:income|earning|cash flow) statement|balance sheet)"
+    )
+    return any(re.fullmatch(pattern, " ".join(_stem(term) for term in _terms(title))) for title in titles)
+
+
+def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[str, ...]) -> list[MemoryHit]:
+    document_words = [_document_words(hit.text.partition("\n")[0]) for hit in hits]
+    matched_documents = _named_documents(hits, original)
+    named_documents = [hit.text.partition("\n")[0] in matched_documents for hit in hits]
     documents = [Counter(_stem(term) for term in _terms(hit.text.partition("\n")[2])) for hit in hits]
     frequency: Counter[str] = Counter()
     for document in documents:
         frequency.update(document.keys())
     average_length = sum(sum(document.values()) for document in documents) / max(len(documents), 1)
     weights = dict.fromkeys((_stem(term) for phrase in expansions for term in _terms(phrase)), 0.45)
-    weights.update(dict.fromkeys((_stem(term) for term in original), 1.0))
+    names = {term for words, matched in zip(document_words, named_documents, strict=True) if matched for term in words}
+    content_terms = tuple(_stem(term) for term in original if not term.isdigit() and term not in names)
+    weights.update(dict.fromkeys(content_terms, 1.0))
     # Singular/plural aliases must not multiply the same phrase's ranking bonus.
     phrases = tuple(dict.fromkeys(" ".join(_stem(term) for term in _terms(phrase)) for phrase in expansions))
+    financial = bool(
+        set(content_terms)
+        & {
+            "margin",
+            "capital",
+            "asset",
+            "income",
+            "earning",
+            "revenue",
+            "sale",
+            "cash",
+            "tax",
+            "ppne",
+            "ppe",
+            "ebitda",
+        }
+    )
+    statements = [
+        (financial or "inventory" in content_terms) and named and _statement_title(hit.text.partition("\n")[2])
+        for hit, named in zip(hits, named_documents, strict=True)
+    ]
+    customers = "customer" in content_terms
+    revenue_sources = [
+        customers
+        and named
+        and bool(
+            re.search(
+                r"\b(?:revenues?|sales)\b[^.]{0,100}\b(?:from|pursuant to|attributable to)\b",
+                " ".join(hit.text.partition("\n")[2].lower().split()),
+            )
+        )
+        for hit, named in zip(hits, named_documents, strict=True)
+    ]
 
     def score(index: int) -> float:
         hit, document = hits[index], documents[index]
@@ -299,6 +416,20 @@ def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[st
                 result += 1.5
                 if phrase in heading:
                     result += 4.5
+        # Titles that use the question's own nouns are as useful as titles from
+        # the financial vocabulary. This also handles novel topic wording.
+        result += 3 * sum(term in heading.split() for term in set(content_terms))
+        if financial and re.search(
+            r"\b(?:statement (?:income|earning|operation|cash flow|financial position)"
+            r"|(?:income|earning|cash flow) statement|balance sheet)\b",
+            heading,
+        ):
+            # Quantitative questions often require operands on several core
+            # statements, including when their requested ratio is not reported.
+            result += 12
+        for left, right in set(pairwise(content_terms)):
+            if f" {left} {right} " in f" {body} ":
+                result += 2
         # Document names are supplied input, used only as ordinary query evidence.
         # A company/year match helps distinguish otherwise identical financial tables.
         result += 2 * len(set(document_words[index]).intersection(original))
@@ -306,11 +437,20 @@ def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[st
 
     return [
         hits[index]
-        for index in sorted(range(len(hits)), key=lambda index: (not named_documents[index], -score(index), index))
+        for index in sorted(
+            range(len(hits)),
+            key=lambda index: (
+                not named_documents[index],
+                not revenue_sources[index],
+                not statements[index],
+                -score(index),
+                index,
+            ),
+        )
     ]
 
 
-async def search_pdf_pages(
+async def search_pdf_pages(  # noqa: C901 - Search, document expansion, and exact citation validation.
     memory: ScopedMemoryApplication, question: str, limit: int = 10
 ) -> tuple[MemoryCitation, ...]:
     """Return distinct real PDF page citations, without leaving ``memory``'s scope.
@@ -326,11 +466,18 @@ async def search_pdf_pages(
     original, expansions = _query_parts(question)
     if limit == 0 or not original:
         return ()
+    search_terms = tuple(dict.fromkeys(original))
+    abbreviations = tuple(
+        word.lower()
+        for word in re.findall(r"\b[A-Za-z][A-Za-z0-9&]*\b", question)
+        if sum(character.isupper() for character in word) >= 2
+    )
     queries = tuple(
         dict.fromkeys((
-            " ".join(original),
+            " ".join(search_terms),
             *expansions,
-            *(" ".join(original[index : index + 4]) for index in range(0, len(original), 4)),
+            *abbreviations,
+            *(" ".join(search_terms[index : index + 4]) for index in range(0, len(search_terms), 4)),
         ))
     )
     candidates: dict[tuple[str, str, str], MemoryHit] = {}
@@ -339,6 +486,14 @@ async def search_pdf_pages(
         for hit in page.hits:
             key = (hit.memory_ref.artifact_id, hit.entry_id, hit.entry_version_id)
             candidates.setdefault(key, hit)
+    # Scope stays with the caller's public API. A document explicitly identified
+    # by the question can supply tables that lack the question's surface words.
+    for document_id in sorted(_named_documents(list(candidates.values()), original)):
+        page = await memory.search(SearchMemoryRequest(query=document_id, mode="fts", limit=max(1000, limit * 4)))
+        for hit in page.hits:
+            if hit.text.partition("\n")[0] == document_id:
+                key = (hit.memory_ref.artifact_id, hit.entry_id, hit.entry_version_id)
+                candidates.setdefault(key, hit)
     seen: set[str] = set()
     citations: list[MemoryCitation] = []
     for hit in _rank(list(candidates.values()), original, expansions):

@@ -280,3 +280,54 @@ def test_vector_only_and_image_only_pages_are_valid_without_ocr():
     writer.write(output)
     pages = parse_pdf_document(PDFDocumentInput(document_id="graphics", content=output.getvalue()))
     assert [(page.page_number, page.text) for page in pages] == [(1, ""), (2, "")]
+
+
+@pytest.mark.parametrize("cut", [0, 1, 4, 8])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("location", ["page", "array", "form"])
+def test_compressed_page_requires_complete_stream_even_in_filter_chain(cut, wrapped, location):
+    import zlib
+
+    from pypdf.generic import EncodedStreamObject, NullObject
+
+    expected = "Second page evidence 123456789 " * 100
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes(("Valid first page", expected)))))
+    original = writer.pages[1].get_contents()
+    assert original is not None
+    compressed = zlib.compress(original.get_data())
+    if cut:
+        compressed = compressed[:-cut]
+    contents = EncodedStreamObject()
+    if wrapped:
+        contents._data = compressed.hex().encode("ascii") + b">"
+        contents[NameObject("/Filter")] = ArrayObject([NameObject("/ASCIIHexDecode"), NameObject("/FlateDecode")])
+        contents[NameObject("/DecodeParms")] = NullObject()
+    else:
+        contents._data = compressed
+        contents[NameObject("/Filter")] = NameObject("/FlateDecode")
+    if location == "form":
+        contents[NameObject("/Type")] = NameObject("/XObject")
+        contents[NameObject("/Subtype")] = NameObject("/Form")
+        contents[NameObject("/BBox")] = writer.pages[1]["/MediaBox"]
+        resources = writer.pages[1]["/Resources"]
+        assert isinstance(resources, DictionaryObject)
+        contents[NameObject("/Resources")] = DictionaryObject(resources)
+        resources[NameObject("/XObject")] = DictionaryObject({
+            NameObject("/Evidence"): writer._add_object(contents),
+        })
+        invocation = DecodedStreamObject()
+        invocation.set_data(b"/Evidence Do")
+        writer.pages[1][NameObject("/Contents")] = writer._add_object(invocation)
+    else:
+        reference = writer._add_object(contents)
+        writer.pages[1][NameObject("/Contents")] = ArrayObject([reference]) if location == "array" else reference
+    output = io.BytesIO()
+    writer.write(output)
+    value = PDFDocumentInput(document_id="compressed", content=output.getvalue())
+    if cut:
+        with pytest.raises(ValueError):
+            parse_pdf_document(value)
+    else:
+        pages = parse_pdf_document(value)
+        assert len(pages) == 2
+        assert terms(pages[1].text) == terms(expected)

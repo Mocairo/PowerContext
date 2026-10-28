@@ -117,6 +117,60 @@ async def test_document_names_match_whole_query_tokens_not_substrings():
 
 
 @pytest.mark.asyncio
+async def test_financial_operands_outrank_auditor_references_to_statements():
+    memory = ScopedSearch([
+        *(
+            entry(
+                i,
+                "MARLIN_2036_10K\nAudit opinion\nWe audited the consolidated statements of income. "
+                "Gross margin operating margin net sales revenue cost of sales are discussed in the income statements.",
+            )
+            for i in range(25)
+        ),
+        entry(
+            25, "MARLIN_2036_10K\nConsolidated\nStatements of Earnings\nRevenue 4510\nExpenses 2560\nNet income 1950"
+        ),
+    ])
+    citations = await search_pdf_pages(cast(ScopedMemoryApplication, memory), "What is Marlin's gross margin?", limit=1)
+    assert [citation.entry_id for citation in citations] == ["entry-25"]
+
+
+@pytest.mark.asyncio
+async def test_customer_question_retrieves_revenue_origin_without_word_customer():
+    memory = ScopedSearch([
+        *(
+            entry(i, "MARLIN_2036_10K\nCustomer contacts\nCustomer service logs customer complaints.")
+            for i in range(25)
+        ),
+        entry(25, "MARLIN_2036_10K\nCommercial relationships\nSales are derived from three distribution partners."),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), "Who are Marlin's primary customers?", limit=1
+    )
+    assert [citation.entry_id for citation in citations] == ["entry-25"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "document_id,question",
+    [
+        ("5R_2031_10K", "After R&D spending, what is 5R's return on assets in 2031?"),
+        ("REEDREED_2031_10K", "What is Reed & Reed's return on assets in 2031?"),
+    ],
+)
+async def test_repeated_query_words_preserve_company_identity(document_id, question):
+    memory = ScopedSearch([
+        *(
+            entry(i, f"OTHER_2031_10K\nStatements of income\nNet income {i}\nNet earnings {i}\nTotal assets {i}")
+            for i in range(25)
+        ),
+        entry(25, f"{document_id}\nNet income 10\nAssets 50"),
+    ])
+    citations = await search_pdf_pages(cast(ScopedMemoryApplication, memory), question, limit=1)
+    assert [citation.entry_id for citation in citations] == ["entry-25"]
+
+
+@pytest.mark.asyncio
 async def test_comparison_can_select_both_named_documents():
     memory = ScopedSearch([
         entry(1, "OTHER_2031_10K\nStatements of income\nNet income 900\nNet earnings 900\nTotal assets 900"),
@@ -165,3 +219,64 @@ async def test_invalid_limit(limit):
 async def test_invalid_question(question):
     with pytest.raises(ValueError):
         await search_pdf_pages(cast(ScopedMemoryApplication, ScopedSearch([])), question)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "document_id,declaration,alias",
+    [
+        ("ASTERLABS_2031_10K", "Aster Labs Company (“Alx”) manufactures sensors.", "ALX"),
+        (
+            "CEDAR_CEDAR_2031_10K",
+            "The Company’s Common Stock is listed on the Example Exchange under the symbol CNC.",  # noqa: RUF001
+            "CnC",
+        ),
+    ],
+)
+async def test_company_alias_in_source_text_selects_other_pages_of_same_document(document_id, declaration, alias):
+    memory = ScopedSearch([
+        *(
+            entry(i, f"OTHER_2031_10K\nStatements of income\nNet income {i}\nNet earnings {i}\nTotal assets {i}")
+            for i in range(25)
+        ),
+        entry(25, f"{document_id}\nNet income 10\nTotal assets 50"),
+        entry(26, f"{document_id}\n{declaration}"),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), f"What figures determine {alias}'s return on assets in 2031?", limit=1
+    )
+    assert [citation.entry_id for citation in citations] == ["entry-25"]
+    assert citations[0] in memory.read
+
+
+@pytest.mark.asyncio
+async def test_competitor_alias_declaration_does_not_promote_host_document():
+    memory = ScopedSearch([
+        entry(
+            1,
+            "REDWOOD_2031_10K\nStatements of income\nNet income 900\nNet earnings 900\nTotal assets 900\n"
+            "Aster Labs Company (“Alx”) is a competitor.",
+        ),
+        entry(2, "ASTERLABS_2031_10K\nNet income 10\nTotal assets 50"),
+        entry(3, "ASTERLABS_2031_10K\nAster Labs Company (“Alx”) manufactures sensors."),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), "What figures determine ALX's return on assets in 2031?", limit=1
+    )
+    assert [citation.entry_id for citation in citations] == ["entry-2"]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_alias_keeps_evidence_from_both_declaring_documents():
+    memory = ScopedSearch([
+        entry(1, "OTHER_2031_10K\nStatements of income\nNet income 900\nNet earnings 900\nTotal assets 900"),
+        entry(2, "ASTERLABS_2031_10K\nNet income 10\nTotal assets 50"),
+        entry(3, "ASTERLABS_2031_10K\nAster Labs Company (“Alx”) manufactures sensors."),
+        entry(4, "ALPINELOGISTICS_2031_10K\nNet income 20\nTotal assets 80"),
+        entry(5, "ALPINELOGISTICS_2031_10K\nAlpine Logistics Company (“Alx”) operates warehouses."),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), "What figures determine ALX's return on assets in 2031?", limit=2
+    )
+    assert {citation.entry_id for citation in citations} == {"entry-2", "entry-4"}
+    assert all(citation in memory.read for citation in citations)
