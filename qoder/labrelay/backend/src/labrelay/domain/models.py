@@ -40,6 +40,7 @@ class Project(BaseModel):
     learner_scope_id: str
     active_plan_id: str | None = None
     handoff_ref: str | None = None
+    handoff_receipt_ref: str | None = None
 
 
 class Asset(BaseModel):

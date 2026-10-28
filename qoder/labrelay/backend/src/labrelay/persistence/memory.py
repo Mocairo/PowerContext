@@ -31,6 +31,7 @@ class InMemoryRepository:
         self.tasks: dict[str, LearningTask] = {}
         self.events: list[TaskEvent] = []
         self.assessments: dict[str, dict[str, object]] = {}
+        self.handoff_drafts: dict[str, dict[str, object]] = {}
 
     async def initialize(self) -> None:
         """No schema to create; repeatable so startup wiring can call it unconditionally."""
@@ -75,6 +76,17 @@ class InMemoryRepository:
     async def get_assessment(self, assessment_id: str) -> dict[str, object] | None:
         """A detached copy, so a reader cannot edit a stored answer without saving it back."""
         stored = self.assessments.get(assessment_id)
+        return deepcopy(stored) if stored is not None else None
+
+    async def save_handoff_draft(
+        self, draft_id: str, project_id: str, payload: dict[str, object]
+    ) -> None:
+        self.handoff_drafts[draft_id] = deepcopy(
+            {**payload, "id": draft_id, "project_id": project_id}
+        )
+
+    async def get_handoff_draft(self, draft_id: str) -> dict[str, object] | None:
+        stored = self.handoff_drafts.get(draft_id)
         return deepcopy(stored) if stored is not None else None
 
     async def save_plan(self, plan: LearningPlan) -> None:

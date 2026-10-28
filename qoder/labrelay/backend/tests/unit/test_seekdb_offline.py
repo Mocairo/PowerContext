@@ -153,9 +153,10 @@ def test_collection_schema_uses_ngram_for_mixed_code_and_chinese() -> None:
 def test_schema_statements_cover_core_tables_and_task_order() -> None:
     statements = _schema_statements()
 
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert all(statement.startswith("CREATE TABLE IF NOT EXISTS") for statement in statements)
     sql = "\n".join(statements)
+    assert "CREATE TABLE IF NOT EXISTS handoff_drafts" in sql
     assert "position INT NOT NULL DEFAULT 0" in sql
     assert "INDEX idx_tasks_plan_position (plan_id, position)" in sql
 

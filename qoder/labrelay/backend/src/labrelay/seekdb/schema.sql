@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS projects (
   learner_scope_id VARCHAR(255) NOT NULL,
   active_plan_id VARCHAR(64) NULL,
   handoff_ref VARCHAR(255) NULL,
+  handoff_receipt_ref VARCHAR(512) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -28,6 +29,14 @@ CREATE TABLE IF NOT EXISTS assessments (
   project_id VARCHAR(64) NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS handoff_drafts (
+  id VARCHAR(64) PRIMARY KEY,
+  project_id VARCHAR(64) NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_handoff_drafts_project (project_id)
 );
 
 CREATE TABLE IF NOT EXISTS plans (

@@ -6,6 +6,7 @@ from powercontext.http import (
     HandoffContent,
     HandoffSelection,
     PreparedHandoff,
+    SourceReference,
 )
 
 from labrelay.application.handoff import (
@@ -85,6 +86,9 @@ class RecordingContext:
         )
         self.reference = ArtifactReference(family="handoff", artifact_id="h1", revision=1)
 
+    async def remember(self, scope_id, kind, text, reason=None):
+        self.calls.append(("remember", (scope_id, kind, text, reason)))
+
     async def create_source(self, scope_id: str, request):
         self.calls.append(("create_source", (scope_id, request)))
         return SimpleNamespace(source_id="source-1")
@@ -107,7 +111,11 @@ class RecordingContext:
 
     async def acknowledge_handoff(self, request):
         self.calls.append(("acknowledge_handoff", request))
-        return SimpleNamespace(receipt=object())
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                source=SourceReference(name="handoff-receipt", source_id="ack-1")
+            )
+        )
 
     async def record_outcome(self, request):
         self.calls.append(("record_outcome", request))
@@ -123,7 +131,12 @@ async def test_prepare_stores_draft_without_calling_powercontext() -> None:
     preview = await service.prepare("project-1", make_draft())
 
     assert preview.persisted is False
-    assert preview.draft.objective == "复现 baseline"
+    assert preview.draft_id
+    assert preview.objective == "复现 baseline"
+    stored = await repository.get_handoff_draft(preview.draft_id)
+    assert stored is not None
+    assert stored["project_id"] == "project-1"
+    assert stored["draft"]["objective"] == "复现 baseline"
     assert context.calls == []
 
 
@@ -132,32 +145,54 @@ async def test_confirm_creates_source_contract_handoff_and_saves_exact_ref() -> 
     context = RecordingContext()
     service = HandoffService(repository, context)
     await repository.save_project(make_project())
-    await service.prepare("project-1", make_draft())
+    preview = await service.prepare("project-1", make_draft())
 
-    result = await service.confirm("project-1")
+    result = await service.confirm("project-1", draft_id=preview.draft_id)
 
     assert [call[0] for call in context.calls] == [
+        "remember",
         "create_source",
         "create_contract",
         "prepare_handoff",
         "commit_handoff",
     ]
     assert result.handoff_ref == context.reference.model_dump_json()
+    assert result.scope_id == "project-scope-1"
     stored = await repository.get_project("project-1")
     assert stored is not None
     assert stored.handoff_ref == result.handoff_ref
 
-    source_scope, source_request = context.calls[0][1]
+    memory_scope, memory_kind, memory_text, memory_reason = context.calls[0][1]
+    assert memory_scope == "project-scope-1"
+    assert memory_kind == "handoff"
+    assert "复现 baseline" in memory_text
+    assert memory_reason == "handoff:project-1"
+    source_scope, source_request = context.calls[1][1]
     assert source_scope == "project-scope-1"
     assert source_request.content["state"][0]["citations"][0]["asset_id"] == "asset-1"
-    contract_request = context.calls[1][1]
-    assert contract_request.contract.facts[0].basis == "verified"
+    contract_request = context.calls[2][1]
+    assert contract_request.contract.facts[0].basis == "declared"
     assert contract_request.contract.facts[0].evidence == []
-    handoff_request = context.calls[2][1]
+    handoff_request = context.calls[3][1]
     assert handoff_request.handoff.state[0].text == "已完成 baseline"
     assert handoff_request.handoff.next_action.text == "推进扩展实验"
-    commit_request = context.calls[3][1]
+    commit_request = context.calls[4][1]
     assert commit_request.handoff == context.prepared
+
+
+async def test_confirm_rejects_a_draft_from_another_project() -> None:
+    repository = InMemoryRepository()
+    context = RecordingContext()
+    service = HandoffService(repository, context)
+    await repository.save_project(make_project())
+    other = make_project().model_copy(update={"id": "project-2", "title": "Other"})
+    await repository.save_project(other)
+    preview = await service.prepare("project-1", make_draft())
+
+    with pytest.raises(HandoffNotReadyError, match="another project"):
+        await service.confirm("project-2", draft_id=preview.draft_id)
+
+    assert context.calls == []
 
 
 async def test_confirm_without_draft_is_refused() -> None:
@@ -206,13 +241,40 @@ async def test_acknowledge_requires_committed_handoff_and_uses_exact_revision() 
     await service.prepare("project-1", make_draft())
     await service.confirm("project-1")
     context.calls.clear()
-    await service.acknowledge("project-1", request)
+    result = await service.acknowledge("project-1", request)
 
     ack_request = context.calls[0][1]
     assert ack_request.selection.value == "exact"
     assert ack_request.revision == context.reference
     assert ack_request.receiver == "new-student"
     assert ack_request.status.value == "accepted"
+    assert result.receipt_ref
+    stored = await repository.get_project("project-1")
+    assert stored is not None
+    assert stored.handoff_receipt_ref == result.receipt_ref
+
+
+async def test_record_outcome_links_the_acknowledged_receipt() -> None:
+    repository = InMemoryRepository()
+    context = RecordingContext()
+    service = HandoffService(repository, context)
+    await repository.save_project(make_project())
+    await service.prepare("project-1", make_draft())
+    await service.confirm("project-1")
+    await service.acknowledge("project-1", HandoffAcknowledgementRequest(receiver="new-student"))
+    context.calls.clear()
+    request = TaskOutcomeRequest(
+        objective="复现 baseline",
+        status="succeeded",
+        summary="指标一致",
+        observations=["baseline 指标已核对"],
+    )
+
+    await service.record_outcome("project-1", request)
+
+    outcome_request = context.calls[1][1]
+    assert outcome_request.outcome.handoff_receipt_ref is not None
+    assert outcome_request.outcome.handoff_receipt_ref.source_id == "ack-1"
 
 
 async def test_record_outcome_creates_source_and_delegates() -> None:

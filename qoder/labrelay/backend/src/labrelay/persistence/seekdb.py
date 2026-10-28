@@ -20,8 +20,8 @@ _DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
 _UPSERT_PROJECT = """
 INSERT INTO projects
   (id, title, research_area, description, project_scope_id, learner_scope_id,
-   active_plan_id, handoff_ref)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+   active_plan_id, handoff_ref, handoff_receipt_ref)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   research_area = VALUES(research_area),
@@ -29,12 +29,13 @@ ON DUPLICATE KEY UPDATE
   project_scope_id = VALUES(project_scope_id),
   learner_scope_id = VALUES(learner_scope_id),
   active_plan_id = VALUES(active_plan_id),
-  handoff_ref = VALUES(handoff_ref)
+  handoff_ref = VALUES(handoff_ref),
+  handoff_receipt_ref = VALUES(handoff_receipt_ref)
 """
 
 _SELECT_PROJECT = """
 SELECT id, title, research_area, description, project_scope_id, learner_scope_id,
-       active_plan_id, handoff_ref
+       active_plan_id, handoff_ref, handoff_receipt_ref
 FROM projects
 WHERE id = %s
 """
@@ -77,6 +78,20 @@ ON DUPLICATE KEY UPDATE
 _SELECT_ASSESSMENT = """
 SELECT id, project_id, payload_json
 FROM assessments
+WHERE id = %s
+"""
+
+_UPSERT_HANDOFF_DRAFT = """
+INSERT INTO handoff_drafts (id, project_id, payload_json)
+VALUES (%s, %s, %s)
+ON DUPLICATE KEY UPDATE
+  project_id = VALUES(project_id),
+  payload_json = VALUES(payload_json)
+"""
+
+_SELECT_HANDOFF_DRAFT = """
+SELECT payload_json
+FROM handoff_drafts
 WHERE id = %s
 """
 
@@ -206,12 +221,16 @@ class SeekdbRepository:
                 raise
         for statement in _schema_statements():
             self._execute(statement)
-        try:
-            self._execute("ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL")
-        except pymysql.err.MySQLError as exc:
-            # 1060 is "duplicate column name"; a fresh database already has the column.
-            if exc.args[0] != 1060:
-                raise
+        for migration in (
+            "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
+            "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
+        ):
+            try:
+                self._execute(migration)
+            except pymysql.err.MySQLError as exc:
+                # 1060 is "duplicate column name"; a fresh database already has the column.
+                if exc.args[0] != 1060:
+                    raise
 
     def _connect(self, *, with_database: bool = True) -> Any:
         return pymysql.connect(
@@ -265,6 +284,7 @@ class SeekdbRepository:
                 project.learner_scope_id,
                 project.active_plan_id,
                 project.handoff_ref,
+                project.handoff_receipt_ref,
             ),
         )
 
@@ -331,6 +351,30 @@ class SeekdbRepository:
 
     def _get_assessment_sync(self, assessment_id: str) -> dict[str, object] | None:
         row = self._fetch_one(_SELECT_ASSESSMENT, (assessment_id,))
+        if row is None:
+            return None
+        parsed = json.loads(row["payload_json"])
+        return parsed if isinstance(parsed, dict) else None
+
+    async def save_handoff_draft(
+        self, draft_id: str, project_id: str, payload: dict[str, object]
+    ) -> None:
+        await anyio.to_thread.run_sync(self._save_handoff_draft_sync, draft_id, project_id, payload)
+
+    def _save_handoff_draft_sync(
+        self, draft_id: str, project_id: str, payload: dict[str, object]
+    ) -> None:
+        stored = {**payload, "id": draft_id, "project_id": project_id}
+        self._execute(
+            _UPSERT_HANDOFF_DRAFT,
+            (draft_id, project_id, json.dumps(stored, ensure_ascii=False, default=str)),
+        )
+
+    async def get_handoff_draft(self, draft_id: str) -> dict[str, object] | None:
+        return await anyio.to_thread.run_sync(self._get_handoff_draft_sync, draft_id)
+
+    def _get_handoff_draft_sync(self, draft_id: str) -> dict[str, object] | None:
+        row = self._fetch_one(_SELECT_HANDOFF_DRAFT, (draft_id,))
         if row is None:
             return None
         parsed = json.loads(row["payload_json"])

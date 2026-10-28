@@ -31,12 +31,14 @@ from labrelay.api.errors import (
 from labrelay.api.schemas import CreateProjectRequest, ImportRequest, SearchRequest
 from labrelay.application.handoff import (
     HandoffAcknowledgementRequest,
+    HandoffConfirmRequest,
     HandoffDraft,
     HandoffNotReadyError,
     HandoffService,
     TaskOutcomeRequest,
 )
 from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
+from labrelay.context.powercontext import PowerContextUnavailableError
 
 logger = logging.getLogger("labrelay.api.routes")
 
@@ -51,6 +53,18 @@ IMPORT_PATH_MESSAGE = "The import path must be an existing directory."
 def _import_refused(path: Path) -> ApiError:
     """The one 422 an unusable import source can produce, whatever noticed it."""
     return ApiError(422, IMPORT_PATH_NOT_DIRECTORY, IMPORT_PATH_MESSAGE, {"path": str(path)})
+
+
+def _powercontext_unavailable(project_id: str | None = None) -> ApiError:
+    details: dict[str, Any] = {"dependency": "powercontext"}
+    if project_id:
+        details["project_id"] = project_id
+    return ApiError(
+        503,
+        DEPENDENCY_UNAVAILABLE,
+        "The PowerContext service is unavailable.",
+        details,
+    )
 
 
 def build_router() -> APIRouter:
@@ -84,6 +98,13 @@ def build_router() -> APIRouter:
                 "The memory service did not hand back usable project scopes.",
                 {"dependency": "context_gateway"},
             ) from None
+        except PowerContextUnavailableError:
+            logger.warning(
+                "dependency failure operation=create_project request_id=%s "
+                "dependency=powercontext dependency_status=unavailable",
+                request_id_of(request),
+            )
+            raise _powercontext_unavailable() from None
         return project.model_dump()
 
     @router.post("/projects/{project_id}/imports")
@@ -142,11 +163,15 @@ def build_router() -> APIRouter:
         project_id: str,
         handoff: HandoffDep,
         service: ServiceDep,
-        payload: HandoffDraft | None = None,
+        payload: HandoffConfirmRequest | None = None,
     ) -> dict[str, Any]:
         project = await ensure_project(service, project_id)
         try:
-            view = await handoff.confirm(project.id, payload)
+            view = await handoff.confirm(
+                project.id,
+                draft_id=payload.draft_id if payload else None,
+                draft=payload.draft if payload else None,
+            )
         except HandoffNotReadyError as exc:
             raise ApiError(
                 409,
@@ -154,6 +179,8 @@ def build_router() -> APIRouter:
                 str(exc),
                 {"project_id": project.id},
             ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
         return view.model_dump(mode="json")
 
     @router.get("/projects/{project_id}/handoff")
@@ -161,7 +188,10 @@ def build_router() -> APIRouter:
         project_id: str, handoff: HandoffDep, service: ServiceDep
     ) -> dict[str, Any]:
         project = await ensure_project(service, project_id)
-        view = await handoff.get(project.id)
+        try:
+            view = await handoff.get(project.id)
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
         if view is None:
             raise ApiError(
                 404,
@@ -188,6 +218,8 @@ def build_router() -> APIRouter:
                 str(exc),
                 {"project_id": project.id},
             ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
         return result
 
     @router.post("/projects/{project_id}/handoff/outcome")
@@ -207,6 +239,8 @@ def build_router() -> APIRouter:
                 str(exc),
                 {"project_id": project.id},
             ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
         return result
 
     return router

@@ -9,7 +9,7 @@ silently empty search — and every failure a route raises is described by a cod
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from labrelay.domain.models import AssetKind
 
@@ -18,9 +18,13 @@ DEFAULT_SEARCH_LIMIT = 12
 
 
 class CreateProjectRequest(BaseModel):
-    title: str
-    research_area: str
-    description: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    # A PowerContext scope title is ``{title}:project:{project_id}`` with a 256-char limit,
+    # so the human title must leave room for that suffix.
+    title: str = Field(min_length=1, max_length=180)
+    research_area: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=2000)
 
 
 class ImportRequest(BaseModel):

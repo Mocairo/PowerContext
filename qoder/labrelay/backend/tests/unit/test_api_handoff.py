@@ -1,12 +1,18 @@
 from types import SimpleNamespace
 
 import httpx
-from powercontext.http import ArtifactReference, HandoffContent, PreparedHandoff
+from powercontext.http import (
+    ArtifactReference,
+    HandoffContent,
+    PreparedHandoff,
+    SourceReference,
+)
 
 from labrelay.api.main import create_app_with_service
 from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.context.memory import InMemoryContextGateway
+from labrelay.context.powercontext import PowerContextUnavailableError
 from labrelay.domain.models import Project
 from labrelay.persistence.memory import InMemoryRepository
 from labrelay.retrieval.in_memory import InMemorySearchEngine
@@ -58,6 +64,9 @@ class ApiContext:
         )
         self.reference = ArtifactReference(family="handoff", artifact_id="h1", revision=1)
 
+    async def remember(self, scope_id, kind, text, reason=None):
+        return None
+
     async def create_source(self, scope_id, request):
         return SimpleNamespace(source_id="source-1")
 
@@ -74,13 +83,17 @@ class ApiContext:
         return SimpleNamespace(content=self.content)
 
     async def acknowledge_handoff(self, request):
-        return {"receipt": "accepted"}
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                source=SourceReference(name="handoff-receipt", source_id="ack-1")
+            )
+        )
 
     async def record_outcome(self, request):
         return {"source": "recorded"}
 
 
-def build_app():
+def build_app(context=None):
     repository = InMemoryRepository()
     project = Project(
         id="project-1",
@@ -97,7 +110,7 @@ def build_app():
         context=InMemoryContextGateway(),
         model=FakeModel(),
     )
-    handoff_service = HandoffService(repository, ApiContext())
+    handoff_service = HandoffService(repository, context or ApiContext())
     return create_app_with_service(service, handoff_service), repository
 
 
@@ -130,9 +143,14 @@ async def test_handoff_prepare_confirm_get_ack_and_outcome() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             prepared = await client.post("/api/projects/project-1/handoff/prepare", json=DRAFT)
             assert prepared.status_code == 200
-            assert prepared.json()["persisted"] is False
+            prepared_body = prepared.json()
+            assert prepared_body["persisted"] is False
+            assert prepared_body["draft_id"]
 
-            committed = await client.post("/api/projects/project-1/handoff/confirm")
+            committed = await client.post(
+                "/api/projects/project-1/handoff/confirm",
+                json={"draft_id": prepared_body["draft_id"]},
+            )
             assert committed.status_code == 200
             body = committed.json()
             assert body["handoff_ref"]
@@ -150,7 +168,7 @@ async def test_handoff_prepare_confirm_get_ack_and_outcome() -> None:
                 json={"receiver": "new-student"},
             )
             assert acknowledged.status_code == 200
-            assert acknowledged.json()["receipt"] == "accepted"
+            assert acknowledged.json()["receipt_ref"]
 
             outcome = await client.post(
                 "/api/projects/project-1/handoff/outcome",
@@ -164,6 +182,51 @@ async def test_handoff_prepare_confirm_get_ack_and_outcome() -> None:
             )
             assert outcome.status_code == 200
             assert outcome.json()["source"] == "recorded"
+
+
+class FailingCommitContext(ApiContext):
+    async def commit_handoff(self, request):
+        raise PowerContextUnavailableError("powercontext is down")
+
+
+async def test_powercontext_outage_is_503_and_preserves_handoff_ref() -> None:
+    app, repository = build_app(FailingCommitContext())
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            prepared = await client.post("/api/projects/project-1/handoff/prepare", json=DRAFT)
+            draft_id = prepared.json()["draft_id"]
+            failed = await client.post(
+                "/api/projects/project-1/handoff/confirm", json={"draft_id": draft_id}
+            )
+
+    assert failed.status_code == 503
+    assert failed.json()["error"]["code"] == "dependency_unavailable"
+    stored = await repository.get_project("project-1")
+    assert stored is not None
+    assert stored.handoff_ref is None
+
+
+async def test_invalid_receiver_checks_are_422() -> None:
+    app, _ = build_app()
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            prepared = await client.post("/api/projects/project-1/handoff/prepare", json=DRAFT)
+            draft_id = prepared.json()["draft_id"]
+            await client.post(
+                "/api/projects/project-1/handoff/confirm", json={"draft_id": draft_id}
+            )
+            response = await client.post(
+                "/api/projects/project-1/handoff/acknowledge",
+                json={
+                    "receiver": "new-student",
+                    "receiver_checks": {"live_state": "bogus"},
+                },
+            )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_failed"
 
 
 async def test_handoff_errors_are_structured() -> None:

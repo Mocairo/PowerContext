@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from powercontext.client import PowerContextClient
+from powercontext.client import (
+    PowerContextClient,
+    ServerResponseError,
+    TransportError,
+    UnavailableResponseError,
+)
 from powercontext.http import (
     AcknowledgeHandoffRequest,
     CommitHandoffRequest,
@@ -26,6 +31,10 @@ LEARNER_SCOPE_SUMMARY = "Learner background, progress and blockers"
 DEFAULT_CONTEXT_BYTES = 8000
 
 
+class PowerContextUnavailableError(RuntimeError):
+    """The PowerContext dependency could not answer; callers should surface 503."""
+
+
 class PowerContextService:
     """Thin, typed wrapper around :class:`PowerContextClient`.
 
@@ -45,19 +54,40 @@ class PowerContextService:
             )
         )
 
+    async def _call(self, awaitable):
+        """Translate transport and server-side availability failures into one error.
+
+        A 4xx response is left untouched: it means the request itself is wrong, not that the
+        service is down. Authentication/authorization failures are treated as unavailable so
+        the API never claims a memory write succeeded with a bad token.
+        """
+        try:
+            return await awaitable
+        except (TransportError, UnavailableResponseError) as exc:
+            raise PowerContextUnavailableError("PowerContext is unavailable") from exc
+        except ServerResponseError as exc:
+            status_code = getattr(exc, "status_code", 500)
+            if status_code >= 500 or status_code in (401, 403):
+                raise PowerContextUnavailableError("PowerContext is unavailable") from exc
+            raise
+
     async def ensure_scopes(self, project: Project) -> tuple[str, str]:
-        project_scope = await self.client.create_scope(
-            CreateScopeRequest(
-                title=f"{project.title}:project:{project.id}",
-                summary=PROJECT_SCOPE_SUMMARY,
-                idempotency_key=f"labrelay:project:{project.id}",
+        project_scope = await self._call(
+            self.client.create_scope(
+                CreateScopeRequest(
+                    title=f"{project.title}:project:{project.id}",
+                    summary=PROJECT_SCOPE_SUMMARY,
+                    idempotency_key=f"labrelay:project:{project.id}",
+                )
             )
         )
-        learner_scope = await self.client.create_scope(
-            CreateScopeRequest(
-                title=f"{project.title}:learner:{project.id}",
-                summary=LEARNER_SCOPE_SUMMARY,
-                idempotency_key=f"labrelay:learner:{project.id}",
+        learner_scope = await self._call(
+            self.client.create_scope(
+                CreateScopeRequest(
+                    title=f"{project.title}:learner:{project.id}",
+                    summary=LEARNER_SCOPE_SUMMARY,
+                    idempotency_key=f"labrelay:learner:{project.id}",
+                )
             )
         )
         return project_scope.scope_id, learner_scope.scope_id
@@ -65,20 +95,24 @@ class PowerContextService:
     async def remember(
         self, scope_id: str, kind: str, text: str, reason: str | None = None
     ) -> None:
-        await self.client.remember_memory(
-            RememberMemoryRequest(
-                scope_id=scope_id,
-                kind=kind,
-                text=text,
-                reason=reason,
+        await self._call(
+            self.client.remember_memory(
+                RememberMemoryRequest(
+                    scope_id=scope_id,
+                    kind=kind,
+                    text=text,
+                    reason=reason,
+                )
             )
         )
 
     async def prepare_context(
         self, scope_id: str, query: str, max_bytes: int
     ) -> tuple[str | None, str | None]:
-        prepared = await self.client.prepare_context(
-            PrepareContextRequest(scope_id=scope_id, query=query, max_bytes=max_bytes)
+        prepared = await self._call(
+            self.client.prepare_context(
+                PrepareContextRequest(scope_id=scope_id, query=query, max_bytes=max_bytes)
+            )
         )
         status = (
             prepared.status.value if hasattr(prepared.status, "value") else str(prepared.status)
@@ -105,22 +139,22 @@ class PowerContextService:
         return True
 
     async def create_source(self, scope_id: str, request: CreateSourceRequest) -> Any:
-        return await self.client.create_source(scope_id, request)
+        return await self._call(self.client.create_source(scope_id, request))
 
     async def create_contract(self, request: CreateWorkContractRequest) -> Any:
-        return await self.client.create_work_contract(request)
+        return await self._call(self.client.create_work_contract(request))
 
     async def prepare_handoff(self, request: HandoffCurrentWorkRequest) -> Any:
-        return await self.client.handoff_current_work(request)
+        return await self._call(self.client.handoff_current_work(request))
 
     async def commit_handoff(self, request: CommitHandoffRequest) -> Any:
-        return await self.client.commit_handoff(request)
+        return await self._call(self.client.commit_handoff(request))
 
     async def continue_handoff(self, request: ContinueHandoffRequest) -> Any:
-        return await self.client.continue_handoff(request)
+        return await self._call(self.client.continue_handoff(request))
 
     async def acknowledge_handoff(self, request: AcknowledgeHandoffRequest) -> Any:
-        return await self.client.acknowledge_handoff(request)
+        return await self._call(self.client.acknowledge_handoff(request))
 
     async def record_outcome(self, request: RecordTaskOutcomeRequest) -> Any:
-        return await self.client.record_task_outcome(request)
+        return await self._call(self.client.record_task_outcome(request))
