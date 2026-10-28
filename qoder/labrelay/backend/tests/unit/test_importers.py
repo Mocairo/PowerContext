@@ -1,3 +1,5 @@
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -14,10 +16,25 @@ from labrelay.importers.assets import (
     classify_asset,
     import_directory,
     iter_importable_files,
+    scan_directory,
+    skip_reason,
 )
 from labrelay.importers.pdf import extract_pdf_chunks
 
 SECURITY_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "security.yaml"
+# Every value ``skip_reason`` may return; reasons are single tokens, never a token
+# carrying the OS message.
+KNOWN_REASON_TOKENS = {
+    "directory",
+    "excluded_directory",
+    "symlink",
+    "unsupported_extension",
+    "too_large",
+    "binary_content",
+    "unreadable",
+    "build_failed",
+    "chunk_failed",
+}
 
 
 def _file_import_config() -> dict[str, object]:
@@ -338,14 +355,38 @@ def _sample_project(root: Path) -> Path:
     return root
 
 
+def _make_unreadable(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make ``path`` fail to stat, the way a locked or racy file does.
+
+    ``chmod`` cannot express "unreadable" portably (Windows keeps owner read access),
+    so the stat call itself is failed with a fixed, non-localised OS message.
+    """
+    real_stat = Path.stat
+
+    def flaky_stat(self: Path, **kwargs: object) -> os.stat_result:
+        if self.name == path.name:
+            raise PermissionError(13, "permission denied")
+        return real_stat(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+
 async def test_import_directory_persists_assets_and_indexes_chunks(tmp_path: Path) -> None:
     source = _sample_project(tmp_path)
+    restricted = build_asset("project-1", source / "config.yaml")
     repository = FakeRepository()
     search_engine = FakeSearchEngine()
 
     result = await import_directory(repository, search_engine, "project-1", source)
 
-    assert result == {"assets": 4, "chunks": 3, "failed": 0, "skipped": 0}
+    assert result == {
+        "assets": 4,
+        "chunks": 3,
+        "failed": 0,
+        "skipped": 0,
+        "restricted": 1,
+        "restricted_reasons": {restricted.id: ["api_secret"]},
+    }
     assert len(repository.assets) == 4
     assert search_engine.calls == 1
     assert len(search_engine.chunks) == result["chunks"]
@@ -362,9 +403,11 @@ async def test_import_directory_does_not_index_restricted_assets(tmp_path: Path)
 
     repository = FakeRepository()
     search_engine = FakeSearchEngine()
-    await import_directory(repository, search_engine, "project-1", source)
+    result = await import_directory(repository, search_engine, "project-1", source)
 
     assert repository.assets[restricted.id] == restricted
+    assert result["restricted"] == 1
+    assert result["restricted_reasons"] == {restricted.id: ["api_secret"]}
     assert restricted.id not in search_engine.asset_ids
     assert sorted(search_engine.asset_ids) == sorted(
         asset.id for asset in repository.assets.values() if asset.status == "active"
@@ -428,7 +471,14 @@ async def test_import_directory_survives_unreadable_files_after_partial_persiste
     with caplog.at_level("WARNING", logger="labrelay.importers.assets"):
         result = await import_directory(repository, search_engine, "project-1", source)
 
-    assert result == {"assets": 3, "chunks": 2, "failed": 1, "skipped": 0}
+    assert result == {
+        "assets": 3,
+        "chunks": 2,
+        "failed": 1,
+        "skipped": 0,
+        "restricted": 1,
+        "restricted_reasons": {build_asset("project-1", source / "config.yaml").id: ["api_secret"]},
+    }
     failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
     assert [asset.title for asset in failed] == ["train.py"]
     assert search_engine.calls == 1
@@ -453,11 +503,20 @@ async def test_import_directory_counts_and_logs_skipped_files(
     with caplog.at_level("INFO", logger="labrelay.importers.assets"):
         result = await import_directory(repository, search_engine, "project-1", tmp_path)
 
-    assert result == {"assets": 1, "chunks": 1, "failed": 0, "skipped": 4}
+    assert result == {
+        "assets": 1,
+        "chunks": 1,
+        "failed": 0,
+        "skipped": 4,
+        "restricted": 0,
+        "restricted_reasons": {},
+    }
     assert sorted(search_engine.asset_ids) == [build_asset("project-1", keep).id]
     for reason in ("excluded_directory", "unsupported_extension", "binary_content", "too_large"):
         assert reason in caplog.text
         assert f"reason={reason}" in caplog.text
+    # Reasons stay single tokens, so nothing dynamic leaks into the reason field.
+    assert set(re.findall(r"reason=(\S+)", caplog.text)) <= KNOWN_REASON_TOKENS
 
 
 async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
@@ -473,7 +532,14 @@ async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
     with caplog.at_level("WARNING", logger="labrelay.importers.assets"):
         result = await import_directory(repository, search_engine, "project-1", tmp_path)
 
-    assert result == {"assets": 1, "chunks": 1, "failed": 1, "skipped": 0}
+    assert result == {
+        "assets": 1,
+        "chunks": 1,
+        "failed": 1,
+        "skipped": 0,
+        "restricted": 0,
+        "restricted_reasons": {},
+    }
     failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
     assert [asset.title for asset in failed] == ["scan.pdf"]
     assert failed[0].id not in search_engine.asset_ids
@@ -481,3 +547,95 @@ async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
         build_asset("project-1", note).id
     ]
     assert "OCR is required" in caplog.text
+
+
+# --- restricted / unreadable operator visibility --------------------------------
+
+
+def test_unreadable_skip_reason_stays_a_single_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``unreadable`` carries no OS text; the detail is a separate field."""
+    locked = tmp_path / "locked.md"
+    locked.write_text("evidence\n", encoding="utf-8")
+    _make_unreadable(monkeypatch, locked)
+
+    assert skip_reason(locked, tmp_path) == "unreadable"
+    assert "unreadable: permission denied" not in str(skip_reason(locked, tmp_path))
+    importable, skipped = scan_directory(tmp_path)
+    assert importable == []
+    assert skipped == [(locked, "unreadable", "permission denied")]
+
+
+def test_skip_reason_still_separates_directories_from_files(tmp_path: Path) -> None:
+    """The single-stat rewrite must not change what counts as a candidate file."""
+    (tmp_path / "sub").mkdir()
+    note = tmp_path / "notes.md"
+    note.write_text("# ok\nkeep me\n", encoding="utf-8")
+
+    assert skip_reason(tmp_path / "sub", tmp_path) == "directory"
+    assert skip_reason(note, tmp_path) is None
+    assert scan_directory(tmp_path) == ([note], [])
+
+
+async def test_import_directory_reports_restricted_and_unreadable_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One run reports both the blocked evidence and the file it could not read."""
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# handoff\napi_key: super-secret-value\npassword: another-secret-value\n",
+        encoding="utf-8",
+    )
+    clean = tmp_path / "notes.md"
+    clean.write_text("# ok\nkeep me\n", encoding="utf-8")
+    locked = tmp_path / "locked.md"
+    locked.write_text("unreachable evidence\n", encoding="utf-8")
+    _make_unreadable(monkeypatch, locked)
+
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+    with caplog.at_level("INFO", logger="labrelay.importers.assets"):
+        result = await import_directory(repository, search_engine, "project-1", tmp_path)
+
+    restricted_id = build_asset("project-1", readme).id
+    assert result == {
+        "assets": 2,
+        "chunks": 1,
+        "failed": 0,
+        "skipped": 1,
+        "restricted": 1,
+        "restricted_reasons": {restricted_id: ["api_secret", "password_assignment"]},
+    }
+    # Count and detail never disagree.
+    assert len(result["restricted_reasons"]) == result["restricted"]
+    assert all(len(reasons) > 0 for reasons in result["restricted_reasons"].values())
+    assert all(reasons == sorted(reasons) for reasons in result["restricted_reasons"].values())
+
+    # Restricted evidence is stored and stays out of the index.
+    assert repository.assets[restricted_id].status == "restricted"
+    assert restricted_id not in search_engine.asset_ids
+    assert sorted(search_engine.asset_ids) == [build_asset("project-1", clean).id]
+    assert [chunk.asset_id for chunk in search_engine.chunks.values()] == [
+        build_asset("project-1", clean).id
+    ]
+
+    messages = [record.getMessage() for record in caplog.records]
+    restricted_lines = [m for m in messages if "operation=import_restricted_asset" in m]
+    assert len(restricted_lines) == 1
+    assert f"asset_id={restricted_id}" in restricted_lines[0]
+    assert "findings=api_secret,password_assignment" in restricted_lines[0]
+    assert "indexed=false" in restricted_lines[0]
+
+    skip_lines = [m for m in messages if "reason=unreadable" in m]
+    assert len(skip_lines) == 1
+    assert "detail=permission denied" in skip_lines[0]
+    assert set(re.findall(r"reason=(\S+)", caplog.text)) <= KNOWN_REASON_TOKENS
+
+    # Neither the blocked content nor the secrets it held leave the process.
+    assert "super-secret-value" not in caplog.text
+    assert "another-secret-value" not in caplog.text
+    assert "unreachable evidence" not in caplog.text
+    assert "super-secret-value" not in repr(result)
