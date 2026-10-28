@@ -1,0 +1,1 @@
+"""seekdb schema resources."""
