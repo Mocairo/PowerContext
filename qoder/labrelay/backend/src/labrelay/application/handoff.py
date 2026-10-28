@@ -34,7 +34,7 @@ from powercontext.http import (
     SourceReference,
     TaskOutcome,
 )
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from labrelay.context.powercontext import PowerContextService
 from labrelay.domain.models import Citation, Project
@@ -102,6 +102,23 @@ class HandoffAcknowledgementRequest(BaseModel):
     status: Literal["accepted", "needs_clarification", "declined"] = "accepted"
     message: NonEmptyText | None = None
     receiver_checks: ReceiverCheckValues | None = None
+
+    @model_validator(mode="after")
+    def mirror_powercontext_acknowledgement_rules(self) -> HandoffAcknowledgementRequest:
+        # PowerContext rejects an accepted Handoff without all three receiver checks
+        # confirmed, and a non-accepted one without a message; reject here so the
+        # request never fails on the wire as a 500.
+        if self.status == "accepted":
+            checks = self.receiver_checks
+            if checks is None or not (
+                checks.live_state == "confirmed"
+                and checks.capability == "confirmed"
+                and checks.authorization == "confirmed"
+            ):
+                raise ValueError("accepted acknowledgement requires all receiver checks confirmed")
+        elif self.message is None:
+            raise ValueError("non-accepted acknowledgement requires a message")
+        return self
 
 
 class HandoffAcknowledgementView(BaseModel):
