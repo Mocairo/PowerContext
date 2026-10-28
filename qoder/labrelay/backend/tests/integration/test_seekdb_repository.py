@@ -102,8 +102,11 @@ async def test_repository_round_trip() -> None:
     assert await repository.get_plan(plan.id) == plan
     assert await repository.get_next_plan_version(project_id) == 2
 
-    active_project = project.model_copy(update={"active_plan_id": plan.id})
+    active_project = project.model_copy(
+        update={"active_plan_id": plan.id, "handoff_ref": "handoff:h1@1"}
+    )
     await repository.save_project(active_project)
+    assert await repository.get_project(project_id) == active_project
     assert await repository.get_active_plan(project_id) == plan
 
     updated_task = task.model_copy(update={"status": "todo"})

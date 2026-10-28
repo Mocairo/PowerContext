@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS projects (
   project_scope_id VARCHAR(255) NOT NULL,
   learner_scope_id VARCHAR(255) NOT NULL,
   active_plan_id VARCHAR(64) NULL,
+  handoff_ref VARCHAR(255) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

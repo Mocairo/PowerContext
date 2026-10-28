@@ -17,11 +17,16 @@ from fastapi import FastAPI
 
 from labrelay.api.errors import configure_error_surface
 from labrelay.api.routes import build_router
+from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.config import LabRelayConfig
 
 
-def create_app(config: LabRelayConfig, service: LabRelayService | None = None) -> FastAPI:
+def create_app(
+    config: LabRelayConfig,
+    service: LabRelayService | None = None,
+    handoff_service: HandoffService | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.config = config
@@ -30,6 +35,7 @@ def create_app(config: LabRelayConfig, service: LabRelayService | None = None) -
     app = FastAPI(title="LabRelay", lifespan=lifespan)
     configure_error_surface(app)
     app.state.service = service
+    app.state.handoff_service = handoff_service
     app.include_router(build_router())
 
     @app.get("/health/ready")
@@ -39,11 +45,13 @@ def create_app(config: LabRelayConfig, service: LabRelayService | None = None) -
     return app
 
 
-def create_app_with_service(service: LabRelayService) -> FastAPI:
-    """The full HTTP surface around an already-built service.
+def create_app_with_service(
+    service: LabRelayService, handoff_service: HandoffService | None = None
+) -> FastAPI:
+    """The full HTTP surface around already-built services.
 
     Tests and the demo run use this instead of a dependency factory: the service they hand in
     carries its own in-memory repository, engine and gateway double, and the defaults in
     :class:`LabRelayConfig` are enough because no route reads the config yet.
     """
-    return create_app(LabRelayConfig(), service)
+    return create_app(LabRelayConfig(), service, handoff_service)

@@ -19,19 +19,22 @@ _DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
 
 _UPSERT_PROJECT = """
 INSERT INTO projects
-  (id, title, research_area, description, project_scope_id, learner_scope_id, active_plan_id)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+  (id, title, research_area, description, project_scope_id, learner_scope_id,
+   active_plan_id, handoff_ref)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   research_area = VALUES(research_area),
   description = VALUES(description),
   project_scope_id = VALUES(project_scope_id),
   learner_scope_id = VALUES(learner_scope_id),
-  active_plan_id = VALUES(active_plan_id)
+  active_plan_id = VALUES(active_plan_id),
+  handoff_ref = VALUES(handoff_ref)
 """
 
 _SELECT_PROJECT = """
-SELECT id, title, research_area, description, project_scope_id, learner_scope_id, active_plan_id
+SELECT id, title, research_area, description, project_scope_id, learner_scope_id,
+       active_plan_id, handoff_ref
 FROM projects
 WHERE id = %s
 """
@@ -203,6 +206,12 @@ class SeekdbRepository:
                 raise
         for statement in _schema_statements():
             self._execute(statement)
+        try:
+            self._execute("ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL")
+        except pymysql.err.MySQLError as exc:
+            # 1060 is "duplicate column name"; a fresh database already has the column.
+            if exc.args[0] != 1060:
+                raise
 
     def _connect(self, *, with_database: bool = True) -> Any:
         return pymysql.connect(
@@ -255,6 +264,7 @@ class SeekdbRepository:
                 project.project_scope_id,
                 project.learner_scope_id,
                 project.active_plan_id,
+                project.handoff_ref,
             ),
         )
 
