@@ -238,6 +238,17 @@ class SeekdbRepository:
                 with connection.cursor() as cursor:
                     for statement in _schema_statements():
                         cursor.execute(statement)
+                    for migration in (
+                        "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
+                        "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
+                    ):
+                        try:
+                            cursor.execute(migration)
+                        except pymysql.err.MySQLError as exc:
+                            # 1060 is "duplicate column": a database created by an older
+                            # schema already migrated, or by the current one outright.
+                            if exc.args[0] != 1060:
+                                raise
                 connection.commit()
             except Exception:
                 connection.rollback()

@@ -85,7 +85,7 @@ class FakeDatabase:
         self.statements.append(statement)
         if self.fail_on is not None and self.fail_on[0] in statement:
             raise self.fail_on[1]
-        if statement.startswith(("CREATE DATABASE", "CREATE TABLE")):
+        if statement.startswith(("CREATE DATABASE", "CREATE TABLE", "ALTER TABLE")):
             return [], 0
         if statement.startswith("INSERT"):
             return self._insert(statement, params)
@@ -338,6 +338,11 @@ def test_initialize_creates_the_database_and_every_table(database) -> None:
     assert len(creates) == 1 + len(TABLES)
     for table in TABLES:
         assert any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for statement in creates)
+    alters = [statement for statement in database.statements if statement.startswith("ALTER TABLE")]
+    assert alters == [
+        "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
+        "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
+    ]
     assert database.commits == 2
     assert database.closed == 2
 

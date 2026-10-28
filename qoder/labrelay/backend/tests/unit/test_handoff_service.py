@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from powercontext.builtin.work.models import AcknowledgeHandoff as StrictAck
 from powercontext.http import (
     ArtifactReference,
     HandoffContent,
@@ -8,6 +9,7 @@ from powercontext.http import (
     PreparedHandoff,
     SourceReference,
 )
+from pydantic import ValidationError
 
 from labrelay.application.handoff import (
     HandoffAcknowledgementRequest,
@@ -15,6 +17,7 @@ from labrelay.application.handoff import (
     HandoffNotReadyError,
     HandoffService,
     HandoffStateItem,
+    ReceiverCheckValues,
     TaskOutcomeRequest,
 )
 from labrelay.domain.models import Citation, Project
@@ -233,7 +236,12 @@ async def test_acknowledge_requires_committed_handoff_and_uses_exact_revision() 
     context = RecordingContext()
     service = HandoffService(repository, context)
     await repository.save_project(make_project())
-    request = HandoffAcknowledgementRequest(receiver="new-student")
+    request = HandoffAcknowledgementRequest(
+        receiver="new-student",
+        receiver_checks=ReceiverCheckValues(
+            live_state="confirmed", capability="confirmed", authorization="confirmed"
+        ),
+    )
 
     with pytest.raises(HandoffNotReadyError):
         await service.acknowledge("project-1", request)
@@ -261,7 +269,15 @@ async def test_record_outcome_links_the_acknowledged_receipt() -> None:
     await repository.save_project(make_project())
     await service.prepare("project-1", make_draft())
     await service.confirm("project-1")
-    await service.acknowledge("project-1", HandoffAcknowledgementRequest(receiver="new-student"))
+    await service.acknowledge(
+        "project-1",
+        HandoffAcknowledgementRequest(
+            receiver="new-student",
+            receiver_checks=ReceiverCheckValues(
+                live_state="confirmed", capability="confirmed", authorization="confirmed"
+            ),
+        ),
+    )
     context.calls.clear()
     request = TaskOutcomeRequest(
         objective="复现 baseline",
@@ -275,6 +291,61 @@ async def test_record_outcome_links_the_acknowledged_receipt() -> None:
     outcome_request = context.calls[1][1]
     assert outcome_request.outcome.handoff_receipt_ref is not None
     assert outcome_request.outcome.handoff_receipt_ref.source_id == "ack-1"
+
+
+def test_accepted_acknowledgement_requires_confirmed_receiver_checks() -> None:
+    with pytest.raises(ValidationError):
+        HandoffAcknowledgementRequest(receiver="new-student")
+    with pytest.raises(ValidationError):
+        HandoffAcknowledgementRequest(receiver="new-student", receiver_checks=ReceiverCheckValues())
+    with pytest.raises(ValidationError):
+        HandoffAcknowledgementRequest(receiver="new-student", status="declined")
+
+    accepted = HandoffAcknowledgementRequest(
+        receiver="new-student",
+        receiver_checks=ReceiverCheckValues(
+            live_state="confirmed", capability="confirmed", authorization="confirmed"
+        ),
+    )
+    assert accepted.status == "accepted"
+    declined = HandoffAcknowledgementRequest(
+        receiver="new-student",
+        status="declined",
+        message="资料不完整",
+        receiver_checks=ReceiverCheckValues(),
+    )
+    assert declined.status == "declined"
+
+
+def test_acknowledgement_rules_match_the_powercontext_strict_model() -> None:
+    """App-level rules must equal the strict server rules: nothing invalid reaches the wire."""
+    revision = {"family": "handoff", "artifact_id": "h1", "revision": 1}
+
+    def strict(checks: ReceiverCheckValues, status: str, message: str | None) -> None:
+        StrictAck.model_validate(
+            {
+                "source_id": "handoff-ack-x",
+                "receiver": "new-student",
+                "status": status,
+                "selection": "exact",
+                "revision": revision,
+                "receiver_checks": checks.model_dump(),
+                "message": message,
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        strict(ReceiverCheckValues(), "accepted", None)
+    strict(
+        ReceiverCheckValues(
+            live_state="confirmed", capability="confirmed", authorization="confirmed"
+        ),
+        "accepted",
+        None,
+    )
+    with pytest.raises(ValidationError):
+        strict(ReceiverCheckValues(), "declined", None)
+    strict(ReceiverCheckValues(), "declined", "资料不完整")
 
 
 async def test_record_outcome_creates_source_and_delegates() -> None:
