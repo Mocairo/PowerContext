@@ -3,7 +3,9 @@ import os
 
 import pytest
 
+from labrelay.config import LabRelayConfig
 from labrelay.domain.models import Asset, Chunk
+from labrelay.persistence.seekdb import SeekdbRepository
 from labrelay.retrieval.seekdb import SeekdbSearchEngine
 
 pytestmark = pytest.mark.skipif(
@@ -18,17 +20,21 @@ class FakeEmbedding:
         return [[1.0, 0.0] for _ in texts]
 
 
+def _config() -> LabRelayConfig:
+    return LabRelayConfig(
+        seekdb_host=os.getenv("SEEKDB_HOST", "127.0.0.1"),
+        seekdb_port=int(os.getenv("SEEKDB_PORT", "2881")),
+        seekdb_database=os.getenv("SEEKDB_DATABASE", "labrelay"),
+        seekdb_user=os.getenv("SEEKDB_USER", "root"),
+        seekdb_password=os.getenv("SEEKDB_ROOT_PASSWORD", ""),
+    )
+
+
 def test_upsert_and_hybrid_search() -> None:
     model = FakeEmbedding()
-    engine = SeekdbSearchEngine(
-        host=os.getenv("SEEKDB_HOST", "127.0.0.1"),
-        port=int(os.getenv("SEEKDB_PORT", "2881")),
-        database=os.getenv("SEEKDB_DATABASE", "labrelay"),
-        user=os.getenv("SEEKDB_USER", "root"),
-        password=os.getenv("SEEKDB_ROOT_PASSWORD", ""),
-        collection_name="labrelay_chunks",
-        model=model,
-    )
+    config = _config()
+    asyncio.run(SeekdbRepository.from_config(config).initialize())
+    engine = SeekdbSearchEngine.from_config(config, model)
     asset = Asset(
         id="asset-e2e",
         project_id="project-e2e",

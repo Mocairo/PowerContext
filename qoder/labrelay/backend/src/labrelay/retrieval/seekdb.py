@@ -9,7 +9,13 @@ from typing import Any
 
 import anyio
 import pyseekdb
-from pyseekdb import EmbeddingFunction, HNSWConfiguration
+from pyseekdb import (
+    EmbeddingFunction,
+    FulltextIndexConfig,
+    HNSWConfiguration,
+    Schema,
+    VectorIndexConfig,
+)
 
 from labrelay.config import LabRelayConfig
 from labrelay.domain.models import Asset, Chunk, Citation
@@ -30,9 +36,11 @@ class SeekdbEmbeddingFunction(EmbeddingFunction):
     configuration and is rebound on each engine construction.
     """
 
-    def __init__(self, model: ModelGateway) -> None:
+    def __init__(self, model: ModelGateway, dimensions: int | None = None) -> None:
         self._model = model
-        self._dimension = getattr(model, "dimension", None)
+        self._dimension = (
+            dimensions if dimensions is not None else getattr(model, "dimension", None)
+        )
 
     @property
     def dimension(self) -> int:
@@ -57,6 +65,21 @@ class SeekdbEmbeddingFunction(EmbeddingFunction):
         raise NotImplementedError("The LabRelay embedding function is bound at runtime")
 
 
+def _collection_schema(embedding_function: SeekdbEmbeddingFunction) -> Schema:
+    return Schema(
+        vector_index=VectorIndexConfig(
+            hnsw=HNSWConfiguration(
+                dimension=embedding_function.dimension,
+                distance="cosine",
+            ),
+            embedding_function=embedding_function,
+        ),
+        # The SDK's default analyzer is ``ik``; ``ngram`` keeps code identifiers and
+        # mixed Chinese/English demo material searchable without a custom dictionary.
+        fulltext_index=FulltextIndexConfig(analyzer="ngram"),
+    )
+
+
 class SeekdbSearchEngine:
     """Project-scoped hybrid search backed by a seekdb collection."""
 
@@ -70,6 +93,7 @@ class SeekdbSearchEngine:
         password: str,
         collection_name: str,
         model: ModelGateway,
+        dimensions: int | None = None,
     ) -> None:
         self._client = pyseekdb.Client(
             host=host,
@@ -78,15 +102,17 @@ class SeekdbSearchEngine:
             user=user,
             password=password,
         )
-        embedding_function = SeekdbEmbeddingFunction(model)
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            configuration=HNSWConfiguration(
-                dimension=embedding_function.dimension,
-                distance="cosine",
-            ),
-            embedding_function=embedding_function,
-        )
+        self._embedding_function = SeekdbEmbeddingFunction(model, dimensions)
+        if self._client.has_collection(collection_name):
+            self._collection = self._client.get_collection(
+                collection_name,
+                embedding_function=self._embedding_function,
+            )
+        else:
+            self._collection = self._client.create_collection(
+                name=collection_name,
+                schema=_collection_schema(self._embedding_function),
+            )
 
     @classmethod
     def from_config(cls, config: LabRelayConfig, model: ModelGateway) -> SeekdbSearchEngine:
@@ -98,6 +124,7 @@ class SeekdbSearchEngine:
             password=config.seekdb_password,
             collection_name=COLLECTION_NAME,
             model=model,
+            dimensions=config.embedding.dimensions,
         )
 
     async def upsert_chunks(self, chunks: list[Chunk], assets: list[Asset]) -> None:
@@ -105,14 +132,7 @@ class SeekdbSearchEngine:
 
     def _upsert_sync(self, chunks: list[Chunk], assets: list[Asset]) -> None:
         assets_by_id = {asset.id: asset for asset in assets}
-
-        # Every asset in this batch loses its old chunks first. That evicts evidence for
-        # an asset that turned restricted or failed, and drops chunks an earlier import
-        # produced when the current file no longer produces any.
-        for asset in assets_by_id.values():
-            self._collection.delete(where={"asset_id": asset.id})
-
-        active: list[tuple[Chunk, Asset]] = []
+        pending: dict[str, tuple[Chunk, Asset]] = {}
         for chunk in chunks:
             asset = assets_by_id.get(chunk.asset_id)
             if asset is None:
@@ -129,13 +149,29 @@ class SeekdbSearchEngine:
                     asset.id,
                 )
                 continue
-            active.append((chunk, asset))
+            pending[chunk.id] = (chunk, asset)
+        active = list(pending.values())
+        active_asset_ids = {asset.id for _, asset in active}
+
+        # Evict assets that need no new embedding first: restricted/failed evidence must
+        # disappear immediately, and an active file with no chunks has nothing to replace.
+        for asset in assets_by_id.values():
+            if asset.status != ACTIVE_STATUS or asset.id not in active_asset_ids:
+                self._collection.delete(where={"asset_id": asset.id})
 
         if not active:
             return
 
+        vectors = self._embedding_function([chunk.content for chunk, _ in active])
+
+        # Only replace an active asset's old chunks after its embeddings exist, so an
+        # embedding outage cannot erase evidence that was searchable a moment ago.
+        for asset_id in active_asset_ids:
+            self._collection.delete(where={"asset_id": asset_id})
+
         self._collection.upsert(
             ids=[chunk.id for chunk, _ in active],
+            embeddings=vectors,
             documents=[chunk.content for chunk, _ in active],
             metadatas=[
                 {
@@ -192,10 +228,10 @@ class SeekdbSearchEngine:
                 "n_results": candidate_limit,
             },
             rank={"rrf": {}},
-            n_results=limit,
+            n_results=candidate_limit,
             include=["documents", "metadatas", "distances"],
         )
-        return _diversify(self._convert(result))
+        return _diversify(self._convert(result))[:limit]
 
     @staticmethod
     def _convert(result: dict[str, Any]) -> list[SearchHit]:
@@ -218,7 +254,7 @@ class SeekdbSearchEngine:
             document = (documents[index] if index < len(documents) else "") or metadata.get(
                 "excerpt", ""
             )
-            distance = distances[index] if index < len(distances) else 0.0
+            relevance = distances[index] if index < len(distances) else 0.0
             hits.append(
                 SearchHit(
                     citation=Citation(
@@ -230,7 +266,9 @@ class SeekdbSearchEngine:
                         locator=_parse_locator(metadata.get("locator_json")),
                         excerpt=document[:MAX_EXCERPT_CHARACTERS],
                     ),
-                    score=1.0 / (1.0 + float(distance or 0.0)),
+                    # Under ``rank={"rrf": {}}`` pyseekdb returns the fused relevance in
+                    # ``distances``; it is higher-is-better, not a distance.
+                    score=float(relevance or 0.0),
                 )
             )
         return hits

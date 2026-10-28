@@ -1,14 +1,16 @@
+import asyncio
 import json
 
 import pyseekdb
 import pytest
 
 from labrelay.config import LabRelayConfig
-from labrelay.domain.models import Citation, LearningTask
+from labrelay.domain.models import Asset, Chunk, Citation, LearningTask
 from labrelay.persistence.seekdb import SeekdbRepository, _schema_statements, _task_params
 from labrelay.retrieval.seekdb import (
     SeekdbEmbeddingFunction,
     SeekdbSearchEngine,
+    _collection_schema,
     _diversify,
     _parse_locator,
 )
@@ -25,6 +27,91 @@ class FakeModel:
         return [[1.0, 0.0] for _ in texts]
 
 
+class RecordingEmbedding:
+    dimension = 2
+
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
+        self.events = events
+        self.fail = fail
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        self.events.append("embed")
+        if self.fail:
+            raise RuntimeError("embedding unavailable")
+        return [[1.0, 0.0] for _ in texts]
+
+
+class RecordingCollection:
+    def __init__(self, events: list[str], result: dict | None = None) -> None:
+        self.events = events
+        self.result = result or {}
+        self.calls: list[tuple[str, dict]] = []
+
+    def delete(self, *, where: dict) -> None:
+        self.events.append("delete")
+        self.calls.append(("delete", {"where": where}))
+
+    def upsert(self, **kwargs) -> None:
+        self.events.append("upsert")
+        self.calls.append(("upsert", kwargs))
+
+    def hybrid_search(self, **kwargs) -> dict:
+        self.calls.append(("hybrid_search", kwargs))
+        return self.result
+
+
+def _engine(collection: RecordingCollection, embedding: RecordingEmbedding) -> SeekdbSearchEngine:
+    engine = object.__new__(SeekdbSearchEngine)
+    engine._collection = collection
+    engine._embedding_function = embedding
+    return engine
+
+
+def _asset(status: str = "active") -> Asset:
+    return Asset(
+        id="asset-1",
+        project_id="project-1",
+        kind="code",
+        title="train.py",
+        uri="repo/train.py",
+        checksum="abc",
+        status=status,
+    )
+
+
+def _chunk() -> Chunk:
+    return Chunk(
+        id="asset-1:1",
+        asset_id="asset-1",
+        ordinal=0,
+        content="run baseline",
+        locator={"line_start": 1},
+        token_count=2,
+    )
+
+
+def _search_result(asset_ids: list[str]) -> dict:
+    return {
+        "ids": [[f"chunk-{index}" for index in range(len(asset_ids))]],
+        "metadatas": [
+            [
+                {
+                    "asset_id": asset_id,
+                    "kind": "code",
+                    "title": f"{asset_id}.py",
+                    "uri": f"repo/{asset_id}.py",
+                    "version": "",
+                    "locator_json": json.dumps({"line_start": 1}),
+                    "excerpt": "baseline",
+                }
+                for asset_id in asset_ids
+            ]
+        ],
+        "documents": [["baseline" for _ in asset_ids]],
+        "distances": [[0.25 for _ in asset_ids]],
+    }
+
+
 def test_embedding_function_bridges_model_gateway() -> None:
     model = FakeModel()
     function = SeekdbEmbeddingFunction(model)
@@ -35,7 +122,7 @@ def test_embedding_function_bridges_model_gateway() -> None:
     assert model.calls == [["baseline"], ["a", "b"]]
 
 
-def test_embedding_function_requires_dimension() -> None:
+def test_embedding_function_requires_dimension_or_config_fallback() -> None:
     class NoDimension:
         def embed(self, texts: list[str]) -> list[list[float]]:
             return [[1.0] for _ in texts]
@@ -44,6 +131,7 @@ def test_embedding_function_requires_dimension() -> None:
 
     with pytest.raises(ValueError, match="Embedding dimension"):
         _ = function.dimension
+    assert SeekdbEmbeddingFunction(NoDimension(), dimensions=4).dimension == 4
 
 
 def test_embedding_function_is_rebound_rather_than_persisted() -> None:
@@ -53,6 +141,13 @@ def test_embedding_function_is_rebound_rather_than_persisted() -> None:
     assert pyseekdb.EmbeddingFunction.support_persistence(function) is False
     with pytest.raises(NotImplementedError):
         SeekdbEmbeddingFunction.build_from_config({})
+
+
+def test_collection_schema_uses_ngram_for_mixed_code_and_chinese() -> None:
+    schema = _collection_schema(SeekdbEmbeddingFunction(FakeModel()))
+
+    assert schema.fulltext_index.analyzer == "ngram"
+    assert schema.vector_index.hnsw.dimension == 2
 
 
 def test_schema_statements_cover_core_tables_and_task_order() -> None:
@@ -116,6 +211,85 @@ def test_task_params_round_trip_keeps_payload_and_position() -> None:
     assert LearningTask.model_validate_json(params[10]) == task
 
 
+def test_upsert_embeds_before_replacing_active_chunks() -> None:
+    events: list[str] = []
+    collection = RecordingCollection(events)
+    engine = _engine(collection, RecordingEmbedding(events))
+
+    engine._upsert_sync([_chunk()], [_asset()])
+
+    assert events == ["embed", "delete", "upsert"]
+    assert collection.calls[1][1]["embeddings"] == [[1.0, 0.0]]
+
+
+def test_upsert_keeps_old_chunks_when_embedding_fails() -> None:
+    events: list[str] = []
+    collection = RecordingCollection(events)
+    engine = _engine(collection, RecordingEmbedding(events, fail=True))
+
+    with pytest.raises(RuntimeError, match="embedding unavailable"):
+        engine._upsert_sync([_chunk()], [_asset()])
+
+    assert events == ["embed"]
+    assert collection.calls == []
+
+
+def test_upsert_evicts_restricted_and_chunkless_assets_without_embedding() -> None:
+    for status, chunks in (("restricted", []), ("failed", []), ("active", [])):
+        events: list[str] = []
+        collection = RecordingCollection(events)
+        engine = _engine(collection, RecordingEmbedding(events))
+
+        engine._upsert_sync(chunks, [_asset(status=status)])
+
+        assert events == ["delete"]
+        assert collection.calls == [("delete", {"where": {"asset_id": "asset-1"}})]
+
+
+def test_upsert_skips_chunks_whose_asset_is_missing() -> None:
+    events: list[str] = []
+    collection = RecordingCollection(events)
+    engine = _engine(collection, RecordingEmbedding(events))
+
+    engine._upsert_sync([_chunk()], [])
+
+    assert events == []
+    assert collection.calls == []
+
+
+def test_search_requests_extra_candidates_then_diversifies_and_slices() -> None:
+    events: list[str] = []
+    collection = RecordingCollection(events, _search_result(["asset-1"] * 4 + ["asset-2"]))
+    engine = _engine(collection, RecordingEmbedding(events))
+
+    hits = engine._search_sync("project-1", "baseline", ["code"], 4)
+
+    assert [hit.citation.asset_id for hit in hits] == [
+        "asset-1",
+        "asset-1",
+        "asset-1",
+        "asset-2",
+    ]
+    assert hits[0].score == 0.25
+    kwargs = collection.calls[0][1]
+    assert kwargs["n_results"] == 16
+    assert kwargs["query"]["where"] == {
+        "project_id": "project-1",
+        "status": "active",
+        "kind": {"$in": ["code"]},
+    }
+    assert kwargs["knn"]["where"] == kwargs["query"]["where"]
+
+
+def test_search_empty_query_does_not_touch_the_collection() -> None:
+    events: list[str] = []
+    collection = RecordingCollection(events)
+    engine = _engine(collection, RecordingEmbedding(events))
+
+    assert asyncio.run(engine.search("project-1", "   ", [], 5)) == []
+    assert collection.calls == []
+
+
 def test_convert_builds_citations_and_caps_chunks_per_asset() -> None:
     def metadata(asset_id: str, chunk: int) -> dict[str, str]:
         return {
@@ -140,7 +314,7 @@ def test_convert_builds_citations_and_caps_chunks_per_asset() -> None:
             ]
         ],
         "documents": [["baseline one", "baseline two", "baseline three", "baseline four", "other"]],
-        "distances": [[0.0, 0.0, 0.0, 0.0, 0.0]],
+        "distances": [[0.25, 0.25, 0.25, 0.25, 0.25]],
     }
 
     hits = _diversify(SeekdbSearchEngine._convert(result))
@@ -153,7 +327,7 @@ def test_convert_builds_citations_and_caps_chunks_per_asset() -> None:
     ]
     assert hits[0].citation.version is None
     assert hits[0].citation.locator == {"line_start": 1}
-    assert hits[0].score == 1.0
+    assert hits[0].score == 0.25
 
 
 def test_convert_skips_rows_without_asset_metadata() -> None:
