@@ -13,6 +13,8 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "pypdf>=5,<6",
   "powercontext[client]>=1.4.1,<2",
+  "pyseekdb>=1.4,<2",
+  "anyio>=4.4,<5",
 ]
 
 [project.optional-dependencies]
