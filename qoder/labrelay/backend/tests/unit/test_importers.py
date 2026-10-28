@@ -1,9 +1,14 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from labrelay.domain.models import Asset, Chunk
+from labrelay.importers import assets as assets_module
 from labrelay.importers.assets import (
+    EXCLUDED_DIRS,
+    MAX_FILE_BYTES,
+    TEXT_EXTENSIONS,
     build_asset,
     chunk_asset,
     classify_asset,
@@ -11,6 +16,13 @@ from labrelay.importers.assets import (
     iter_importable_files,
 )
 from labrelay.importers.pdf import extract_pdf_chunks
+
+SECURITY_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "security.yaml"
+
+
+def _file_import_config() -> dict[str, object]:
+    config = yaml.safe_load(SECURITY_CONFIG.read_text(encoding="utf-8"))
+    return dict(config["file_import"])
 
 
 def test_classify_recognizes_code_config_and_notes(tmp_path: Path) -> None:
@@ -26,15 +38,47 @@ def test_classify_recognizes_code_config_and_notes(tmp_path: Path) -> None:
     assert classify_asset(note)[1] == "note"
 
 
+def test_classify_applies_suffix_rules_before_substring_keywords(tmp_path: Path) -> None:
+    """A name merely containing "server" must not turn a paper or a note into ops."""
+    assert classify_asset(tmp_path / "observers.pdf")[1] == "paper"
+    assert classify_asset(tmp_path / "observer.md")[1] == "note"
+    assert classify_asset(tmp_path / "server.py")[1] == "code"
+    assert classify_asset(tmp_path / "server_runbook.md")[1] == "operations"
+    assert classify_asset(tmp_path / "resources.md")[1] == "operations"
+    assert classify_asset(tmp_path / "experiment_results.csv")[1] == "experiment"
+
+
 def test_iter_importable_files_skips_excluded_and_binary(tmp_path: Path) -> None:
     (tmp_path / ".git").mkdir()
     keep = tmp_path / "README.md"
     keep.write_text("# project", encoding="utf-8")
     binary = tmp_path / "weights.bin"
     binary.write_bytes(b"\x00\x01\x02")
+    sneaky = tmp_path / "notes.md"
+    sneaky.write_bytes(b"# notes\x00\xff\xfe\x00garbage")
 
     files = list(iter_importable_files(tmp_path))
     assert files == [keep]
+
+
+def test_iter_importable_files_accepts_every_allowed_extension(tmp_path: Path) -> None:
+    expected: list[Path] = []
+    for suffix in sorted(TEXT_EXTENSIONS):
+        path = tmp_path / f"sample{suffix}"
+        path.write_bytes(b"%PDF-1.4 page text" if suffix == ".pdf" else b"plain text\n")
+        expected.append(path)
+
+    assert sorted(iter_importable_files(tmp_path)) == sorted(expected)
+
+
+def test_import_constants_match_security_yaml() -> None:
+    file_import = _file_import_config()
+
+    assert EXCLUDED_DIRS == set(file_import["exclude_directories"])  # type: ignore[arg-type]
+    assert TEXT_EXTENSIONS == set(file_import["allowed_text_extensions"])  # type: ignore[arg-type]
+    assert ".pdf" in file_import["allowed_text_extensions"]
+    assert MAX_FILE_BYTES == file_import["max_file_bytes"]
+    assert file_import["skip_binary_files"] is True
 
 
 def test_asset_with_secret_is_restricted(tmp_path: Path) -> None:
@@ -80,6 +124,21 @@ def test_build_asset_is_deterministic_and_carries_checksum(tmp_path: Path) -> No
     assert len(first.checksum) == 64
 
 
+def test_build_asset_identity_is_scoped_to_project_and_resolved_path(tmp_path: Path) -> None:
+    """Two projects handoff-ing the same folder must not re-own each other's assets."""
+    note = tmp_path / "handoff.md"
+    note.write_text("# next\nrun lr sweep\n", encoding="utf-8")
+
+    mine = build_asset("project-1", note)
+    theirs = build_asset("project-2", note)
+    same = build_asset("project-1", note.resolve())
+
+    assert mine.id != theirs.id
+    assert mine.checksum == theirs.checksum == same.checksum
+    assert mine.id == same.id
+    assert mine.uri == str(note.resolve())
+
+
 # --- chunking keeps citation-bearing locators --------------------------------
 
 
@@ -89,11 +148,21 @@ def test_chunk_asset_uses_markdown_sections_for_notes(tmp_path: Path) -> None:
 
     chunks = chunk_asset("asset-1", note)
 
-    assert [chunk.content for chunk in chunks] == ["install uv", "run train.py"]
+    assert [chunk.content for chunk in chunks] == ["# setup\ninstall uv", "# train\nrun train.py"]
     assert [chunk.locator for chunk in chunks] == [{"section": "setup"}, {"section": "train"}]
     assert [chunk.ordinal for chunk in chunks] == [0, 1]
     assert [chunk.asset_id for chunk in chunks] == ["asset-1", "asset-1"]
     assert all(chunk.token_count > 0 for chunk in chunks)
+
+
+def test_chunk_asset_keeps_leading_text_before_the_first_heading(tmp_path: Path) -> None:
+    note = tmp_path / "handoff.md"
+    note.write_text("preamble line\n\n# setup\ninstall uv\n", encoding="utf-8")
+
+    chunks = chunk_asset("asset-1", note)
+
+    assert [chunk.content for chunk in chunks] == ["preamble line", "# setup\ninstall uv"]
+    assert [chunk.locator for chunk in chunks] == [{"section": "document"}, {"section": "setup"}]
 
 
 def test_chunk_asset_uses_line_ranges_for_code(tmp_path: Path) -> None:
@@ -130,8 +199,8 @@ def test_chunk_asset_redacts_credentials_before_indexing(tmp_path: Path) -> None
 
     assert "super-secret-value" not in content
     assert "another-secret-value" not in content
-    assert "api_key=[REDACTED]" in content
-    assert "password=[REDACTED]" in content
+    assert "api_key=[MASK]" in content
+    assert "password=[MASK]" in content
 
 
 # --- PDF extraction ----------------------------------------------------------
@@ -202,6 +271,26 @@ def test_extract_pdf_chunks_paginates_with_page_locators(tmp_path: Path) -> None
     assert "ablation" in chunks[1].content
 
 
+def test_extract_pdf_chunks_redacts_credentials_in_page_text(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "leak.pdf", ["api_key=super-secret-value", "clean page"])
+
+    chunks = extract_pdf_chunks(pdf, "asset-9")
+
+    assert "super-secret-value" not in chunks[0].content
+    assert chunks[0].content == "api_key=[MASK]"
+    assert chunks[1].content == "clean page"
+
+
+def test_build_asset_restricts_a_pdf_whose_page_text_carries_a_credential(
+    tmp_path: Path,
+) -> None:
+    leaky = _write_pdf(tmp_path / "leak.pdf", ["api_key=super-secret-value"])
+    clean = _write_pdf(tmp_path / "paper.pdf", ["ablation section"])
+
+    assert build_asset("project-1", leaky).status == "restricted"
+    assert build_asset("project-1", clean).status == "active"
+
+
 def test_extract_pdf_chunks_without_text_reports_ocr_need(tmp_path: Path) -> None:
     scanned = _write_pdf(tmp_path / "scan.pdf", [None])
 
@@ -256,17 +345,31 @@ async def test_import_directory_persists_assets_and_indexes_chunks(tmp_path: Pat
 
     result = await import_directory(repository, search_engine, "project-1", source)
 
-    assert result == {"assets": 4, "chunks": 4, "failed": 0}
+    assert result == {"assets": 4, "chunks": 3, "failed": 0, "skipped": 0}
     assert len(repository.assets) == 4
     assert search_engine.calls == 1
-    assert sorted(search_engine.asset_ids) == sorted(
-        asset.id for asset in repository.assets.values()
-    )
     assert len(search_engine.chunks) == result["chunks"]
     assert all(chunk.asset_id in repository.assets for chunk in search_engine.chunks.values())
     assert all(
         "super-secret-value" not in chunk.content for chunk in search_engine.chunks.values()
     )
+
+
+async def test_import_directory_does_not_index_restricted_assets(tmp_path: Path) -> None:
+    source = _sample_project(tmp_path)
+    restricted = build_asset("project-1", source / "config.yaml")
+    assert restricted.status == "restricted"
+
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+    await import_directory(repository, search_engine, "project-1", source)
+
+    assert repository.assets[restricted.id] == restricted
+    assert restricted.id not in search_engine.asset_ids
+    assert sorted(search_engine.asset_ids) == sorted(
+        asset.id for asset in repository.assets.values() if asset.status == "active"
+    )
+    assert all(chunk.asset_id != restricted.id for chunk in search_engine.chunks.values())
 
 
 async def test_import_directory_is_idempotent(tmp_path: Path) -> None:
@@ -284,6 +387,79 @@ async def test_import_directory_is_idempotent(tmp_path: Path) -> None:
     assert sorted(search_engine.chunks) == chunk_ids
 
 
+async def test_import_directory_keeps_projects_that_share_a_path_separate(tmp_path: Path) -> None:
+    source = _sample_project(tmp_path)
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    await import_directory(repository, search_engine, "project-1", source)
+    await import_directory(repository, search_engine, "project-2", source)
+
+    assert len(repository.assets) == 8
+    assert len(search_engine.chunks) == 6
+
+
+async def test_import_directory_requires_an_existing_directory(tmp_path: Path) -> None:
+    plain_file = tmp_path / "README.md"
+    plain_file.write_text("# ok\n", encoding="utf-8")
+
+    for root in (tmp_path / "does-not-exist", plain_file):
+        with pytest.raises(ValueError, match="not an existing directory"):
+            await import_directory(FakeRepository(), FakeSearchEngine(), "project-1", root)
+
+
+async def test_import_directory_survives_unreadable_files_after_partial_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = _sample_project(tmp_path)
+    original_chunk_asset = assets_module.chunk_asset
+
+    def flaky_chunk_asset(asset_id: str, path: Path) -> list[Chunk]:
+        if path.name == "train.py":
+            raise OSError("permission denied")
+        return original_chunk_asset(asset_id, path)
+
+    monkeypatch.setattr(assets_module, "chunk_asset", flaky_chunk_asset)
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    with caplog.at_level("WARNING", logger="labrelay.importers.assets"):
+        result = await import_directory(repository, search_engine, "project-1", source)
+
+    assert result == {"assets": 3, "chunks": 2, "failed": 1, "skipped": 0}
+    failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
+    assert [asset.title for asset in failed] == ["train.py"]
+    assert search_engine.calls == 1
+    assert "permission denied" in caplog.text
+
+
+async def test_import_directory_counts_and_logs_skipped_files(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    keep = tmp_path / "README.md"
+    keep.write_text("# ok\nkeep me\n", encoding="utf-8")
+    (tmp_path / "wandb").mkdir()
+    (tmp_path / "wandb" / "run.md").write_text("# offline run\n", encoding="utf-8")
+    (tmp_path / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (tmp_path / "raw.md").write_bytes(b"# raw\x00\x01\x02")
+    (tmp_path / "huge.md").write_text("# log\n" + ("x" * 40 + "\n") * 30_000, encoding="utf-8")
+
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    with caplog.at_level("INFO", logger="labrelay.importers.assets"):
+        result = await import_directory(repository, search_engine, "project-1", tmp_path)
+
+    assert result == {"assets": 1, "chunks": 1, "failed": 0, "skipped": 4}
+    assert sorted(search_engine.asset_ids) == [build_asset("project-1", keep).id]
+    for reason in ("excluded_directory", "unsupported_extension", "binary_content", "too_large"):
+        assert reason in caplog.text
+        assert f"reason={reason}" in caplog.text
+
+
 async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -297,7 +473,7 @@ async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
     with caplog.at_level("WARNING", logger="labrelay.importers.assets"):
         result = await import_directory(repository, search_engine, "project-1", tmp_path)
 
-    assert result == {"assets": 1, "chunks": 1, "failed": 1}
+    assert result == {"assets": 1, "chunks": 1, "failed": 1, "skipped": 0}
     failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
     assert [asset.title for asset in failed] == ["scan.pdf"]
     assert failed[0].id not in search_engine.asset_ids

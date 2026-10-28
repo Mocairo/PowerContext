@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import re
 
+# Single placeholder for every masked credential value. ``[MASK]`` is deliberately
+# shorter than the ``\S{8,}`` value window the configured patterns require, so
+# redacted text can never be re-detected as a credential by ``scan_text``.
+MASK = "[MASK]"
+
 # These patterns are byte-for-byte the `sensitive_content.patterns` entries of
 # ``configs/security.yaml``. The file is documentation-grade configuration today
 # (no config-injection layer exists yet), so ``tests/unit/test_import_security.py``
@@ -16,6 +21,19 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "password_assignment": re.compile(r"(?i)password\s*[:=]\s*\S{8,}"),
 }
+
+# Redaction-only companion of the configured ``private_key`` detector. The YAML
+# pattern is a single-line header match: it flags the asset, but masking only the
+# header would leave the base64 key body and the ``-----END ...-----`` marker in
+# the indexed text. This block pattern consumes header, body lines and end marker,
+# and stops at the first line that is not key material so a truncated PEM cannot
+# swallow the rest of the document.
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"(?:[^\r\n]*\r?\n)?"
+    r"(?:[A-Za-z0-9+/=]*\r?\n)*"
+    r"(?:-----END [A-Z ]*PRIVATE KEY-----)?"
+)
 
 # Matches of the form ``label <separator> value`` keep their label visible after
 # redaction so a reader still knows which credential was removed; the remaining
@@ -41,10 +59,10 @@ def _label_of(match: re.Match[str]) -> str:
 
 
 def redact_text(text: str) -> str:
-    """Replace detected credential values with ``[REDACTED]`` before indexing."""
-    result = text
+    """Replace detected credential material with ``[MASK]`` before indexing."""
+    result = _PEM_BLOCK.sub(MASK, text)
     for name in _ASSIGNMENT_PATTERNS:
-        result = PATTERNS[name].sub(lambda match: f"{_label_of(match)}=[REDACTED]", result)
+        result = PATTERNS[name].sub(lambda match: f"{_label_of(match)}={MASK}", result)
     for name in _WHOLE_MATCH_PATTERNS:
-        result = PATTERNS[name].sub("[REDACTED]", result)
+        result = PATTERNS[name].sub(MASK, result)
     return result

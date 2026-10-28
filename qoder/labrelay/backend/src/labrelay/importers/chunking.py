@@ -30,30 +30,40 @@ def split_lines(text: str, *, asset_id: str, max_lines: int = MAX_LINES_PER_CHUN
 
 
 def split_markdown(text: str, *, asset_id: str) -> list[Chunk]:
-    """Chunk notes by Markdown heading so a citation can name its section."""
+    """Chunk notes by Markdown heading so a citation can name its section.
+
+    The heading line stays inside the chunk content (a quoted excerpt therefore
+    carries its own section title), while the locator keeps the bare heading text.
+    """
     chunks: list[Chunk] = []
     heading = "document"
+    heading_line: str | None = None
     buffer: list[str] = []
 
     def flush() -> None:
-        content = "\n".join(buffer).strip()
-        if content:
-            chunks.append(
-                Chunk(
-                    id=f"{asset_id}:heading:{len(chunks)}",
-                    asset_id=asset_id,
-                    ordinal=len(chunks),
-                    content=content,
-                    locator={"section": heading},
-                    token_count=max(1, len(content) // 4),
-                )
-            )
+        nonlocal heading_line
+        body = "\n".join(buffer).strip()
         buffer.clear()
+        if not body:
+            return
+        content = f"{heading_line}\n{body}" if heading_line else body
+        chunks.append(
+            Chunk(
+                id=f"{asset_id}:heading:{len(chunks)}",
+                asset_id=asset_id,
+                ordinal=len(chunks),
+                content=content,
+                locator={"section": heading},
+                token_count=max(1, len(content) // 4),
+            )
+        )
+        heading_line = None
 
     for line in text.splitlines():
         if line.startswith("#"):
             flush()
-            heading = line.lstrip("#").strip()
+            heading = line.lstrip("#").strip() or "document"
+            heading_line = line
         else:
             buffer.append(line)
     flush()

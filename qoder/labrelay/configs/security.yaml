@@ -32,6 +32,9 @@ file_import:
     - .sql
     - .js
     - .ts
+    # PDF page text is extracted with pypdf and imported as evidence, so the
+    # container is importable even though its bytes are not plain text.
+    - .pdf
 
 sensitive_content:
   scan_before_public_export: true
