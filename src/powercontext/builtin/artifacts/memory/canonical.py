@@ -81,7 +81,7 @@ def canonical_json(value: object) -> bytes:
 
 
 def normalize_text(value: str, *, source_refs: Sequence[object] = ()) -> str:
-    """Normalize a durable body, allowing captured PDF pages to remain whole.
+    """Normalize a durable body, preserving exact captured PDF page codepoints.
 
     Ordinary entries retain their existing bound. Page evidence is already
     bounded during Source observation ingestion and must not be truncated into
@@ -92,6 +92,10 @@ def normalize_text(value: str, *, source_refs: Sequence[object] = ()) -> str:
     pdf_page = bool(source_refs) and all(
         isinstance(ref, Mapping) and ref.get("source_type") == "pdf-page" for ref in source_refs
     )
+    if pdf_page:
+        # The Source projection is authoritative; NFC can change both exact
+        # citation readback and the ASCII word boundaries used by PDF checks.
+        normalized = value.strip()
     limit = MAX_SOURCE_OBSERVATION_BYTES if pdf_page else 8192
     if len(normalized.encode("utf-8")) > limit:
         raise _CanonicalValueError("pdf-text-too-long" if pdf_page else "text-too-long")
@@ -169,7 +173,9 @@ def entry_content_bytes(
 ) -> bytes:
     """Return canonical content bytes for an immutable entry version."""
 
-    return canonical_json({
+    # Each field is already normalized below. Recursive NFC here would silently
+    # merge distinct PDF page bodies; RFC 8785 itself preserves string codepoints.
+    return rfc8785.dumps({
         "kind": normalize_kind(kind),
         "text": normalize_text(text, source_refs=source_refs),
         "source_refs": normalize_refs(source_refs),

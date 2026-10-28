@@ -151,8 +151,11 @@ _CONCEPTS = (
     ),
     (("legal", "litigat", "lawsuit", "battle"), ("legal proceedings", "litigation contingencies", "claims lawsuits")),
     (("restructur",), ("restructuring charges", "restructuring costs")),
-    (("income statement", "p l", "profit loss"), ("statements income", "statements operations", "net revenue income")),
-    (("cash flow",), ("statements cash flows", "operating investing financing")),
+    (
+        ("income statement", "p l", "profit loss"),
+        ("statements income", "income statements", "statements operations", "net revenue income"),
+    ),
+    (("cash flow",), ("statements cash flows", "cash flows statements", "operating investing financing")),
     (
         ("ebitda", "d a", "depreciat", "amortiz"),
         ("depreciation amortization", "operating income", "statements cash flows"),
@@ -167,6 +170,64 @@ _CONCEPTS = (
     (("tax",), ("income taxes", "effective tax rate")),
     (("pension", "retirement"), ("pension benefits", "retirement plans")),
     (("research", "r d"), ("research development",)),
+    # Ratios are often calculated from statement rows that never name the ratio.
+    # Retrieve those operands as well as discussions mentioning the metric.
+    (
+        ("gross margin", "gross profit"),
+        ("net sales", "net revenue", "cost sales", "cost revenue", "cost goods sold", "statements operations"),
+    ),
+    (("operating margin",), ("operating income", "operating profit", "net sales", "net revenue")),
+    (("net margin", "profit margin"), ("net income", "net earnings", "net sales", "net revenue")),
+    (("working capital", "current ratio"), ("current assets", "current liabilities", "balance sheets")),
+    (
+        ("quick ratio", "acid test"),
+        ("cash equivalents", "short term investments", "accounts receivable", "current liabilities", "balance sheets"),
+    ),
+    (
+        ("return on assets", "asset return"),
+        (
+            "net income",
+            "net earnings",
+            "total assets",
+            "statements operations",
+            "statements income",
+            "income statements",
+            "balance sheets",
+        ),
+    ),
+    (
+        ("return on equity", "equity return"),
+        ("net income", "net earnings", "shareholders equity", "stockholders equity", "balance sheets"),
+    ),
+    (
+        ("debt to equity", "debt equity", "financial leverage"),
+        ("total debt", "total liabilities", "shareholders equity", "stockholders equity", "balance sheets"),
+    ),
+    (("asset turnover",), ("net sales", "net revenue", "total assets", "balance sheets")),
+    (
+        ("inventory turnover", "inventory days", "days inventory"),
+        ("inventories", "cost sales", "cost revenue", "cost goods sold", "balance sheets"),
+    ),
+    (
+        ("cash conversion cycle", "cash operating cycle"),
+        (
+            "trade receivables",
+            "accounts receivable",
+            "inventories",
+            "trade payables",
+            "accounts payable",
+            "cost sales",
+            "cost revenue",
+            "net sales",
+            "net revenue",
+            "balance sheets",
+            "statements operations",
+        ),
+    ),
+    (
+        ("free cash flow",),
+        ("operating activities", "capital expenditures", "capital spending", "statements cash flows"),
+    ),
 )
 
 
@@ -198,6 +259,20 @@ def _query_parts(question: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[str, ...]) -> list[MemoryHit]:
+    document_words = [
+        tuple(term for term in _terms(hit.text.partition("\n")[0]) if term not in {"10", "k", "q", "annual"})
+        for hit in hits
+    ]
+    # Join whole query tokens, never substrings: "Coca-Cola" can match COCACOLA,
+    # but "technical" must not select a document named TECH. Unrecognized labels
+    # retain the ordinary lexical ranking, including documents with opaque IDs.
+    query_names = {
+        "".join(original[start:end]) for start in range(len(original)) for end in range(start + 1, len(original) + 1)
+    }
+    document_names = [
+        "".join(term for term in words if not (term.isdigit() and len(term) == 4)) for words in document_words
+    ]
+    named_documents = [bool(name) and name in query_names for name in document_names]
     documents = [Counter(_stem(term) for term in _terms(hit.text.partition("\n")[2])) for hit in hits]
     frequency: Counter[str] = Counter()
     for document in documents:
@@ -205,7 +280,8 @@ def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[st
     average_length = sum(sum(document.values()) for document in documents) / max(len(documents), 1)
     weights = dict.fromkeys((_stem(term) for phrase in expansions for term in _terms(phrase)), 0.45)
     weights.update(dict.fromkeys((_stem(term) for term in original), 1.0))
-    phrases = [" ".join(_stem(term) for term in _terms(phrase)) for phrase in expansions]
+    # Singular/plural aliases must not multiply the same phrase's ranking bonus.
+    phrases = tuple(dict.fromkeys(" ".join(_stem(term) for term in _terms(phrase)) for phrase in expansions))
 
     def score(index: int) -> float:
         hit, document = hits[index], documents[index]
@@ -223,13 +299,15 @@ def _rank(hits: list[MemoryHit], original: tuple[str, ...], expansions: tuple[st
                 result += 1.5
                 if phrase in heading:
                     result += 4.5
-        document_terms = set(_terms(hit.text.partition("\n")[0])) - {"10", "k", "q", "annual"}
         # Document names are supplied input, used only as ordinary query evidence.
         # A company/year match helps distinguish otherwise identical financial tables.
-        result += 2 * len(document_terms.intersection(original))
+        result += 2 * len(set(document_words[index]).intersection(original))
         return result
 
-    return [hits[index] for index in sorted(range(len(hits)), key=lambda index: (-score(index), index))]
+    return [
+        hits[index]
+        for index in sorted(range(len(hits)), key=lambda index: (not named_documents[index], -score(index), index))
+    ]
 
 
 async def search_pdf_pages(

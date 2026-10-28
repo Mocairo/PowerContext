@@ -24,7 +24,17 @@ import threading
 
 from pydantic import BaseModel, Field, field_validator
 from pypdf import PdfReader
-from pypdf.generic import ArrayObject, ContentStream, DictionaryObject, PdfObject, StreamObject
+from pypdf.generic import (
+    ArrayObject,
+    ContentStream,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+    NumberObject,
+    PdfObject,
+    StreamObject,
+    is_null_or_none,
+)
 from typing_extensions import override
 
 from powercontext.sources._pdf_search import search_pdf_pages
@@ -90,31 +100,81 @@ def _page_tree_count(node: PdfObject, ancestors: frozenset[int] = frozenset()) -
     return count
 
 
+def _font_resource_name(fonts: DictionaryObject, font: DictionaryObject) -> NameObject:
+    for name, reference in fonts.items():
+        if reference.get_object() is font:
+            return name
+    index = len(fonts)
+    name = NameObject(f"/PowerContextFont{index}")
+    while name in fonts:
+        index += 1
+        name = NameObject(f"/PowerContextFont{index}")
+    fonts[name] = font
+    return name
+
+
 def _validate_text_resources(  # noqa: C901 - PDF graphics state and resource operators are checked together.
     contents: ContentStream,
     resources: PdfObject,
     reader: PdfReader,
     ancestors: frozenset[int] = frozenset(),
-    font_selected: bool = False,
-) -> None:
-    """Check resource failures that pypdf otherwise silently turns into missing text."""
+    font_setting: tuple[DictionaryObject, PdfObject] | None = None,
+) -> DictionaryObject:
+    """Validate resources and materialize font state understood by pypdf.
+
+    pypdf does not apply ExtGState fonts or inherit the caller's font in Forms.
+    Normalize only reader-owned copies; original PDF bytes and their hash remain
+    untouched. Each Form invocation gets its own copy to preserve caller state.
+    """
+    if is_null_or_none(resources):
+        resources = DictionaryObject()
     if not isinstance(resources, DictionaryObject):
         raise TypeError("Invalid PDF page resources")  # noqa: TRY003
+    resources = DictionaryObject(resources)
     fonts = resources.get("/Font", DictionaryObject()).get_object()
+    if is_null_or_none(fonts):
+        fonts = DictionaryObject()
     if not isinstance(fonts, DictionaryObject):
         raise TypeError("Invalid PDF font resources")  # noqa: TRY003
+    fonts = DictionaryObject(fonts)
+    resources[NameObject("/Font")] = fonts
     stack = []
+    prepared = []
+    if font_setting is not None:
+        font, size = font_setting
+        prepared.append(([_font_resource_name(fonts, font), size], b"Tf"))
     for operands, operator in contents.operations:
+        prepared.append((operands, operator))
         if operator == b"q":
-            stack.append(font_selected)
+            stack.append(font_setting)
         elif operator == b"Q" and stack:
-            font_selected = stack.pop()
-        elif operator == b"Tf":
-            font = fonts[operands[0]].get_object()
+            font_setting = stack.pop()
+        elif operator in (b"Tf", b"gs"):
+            if operator == b"Tf":
+                font = fonts[operands[0]].get_object()
+                size = operands[1].get_object()
+            else:
+                states = resources["/ExtGState"]
+                if not isinstance(states, DictionaryObject):
+                    raise TypeError("Invalid PDF graphics state resources")  # noqa: TRY003
+                state = states[operands[0]]
+                if not isinstance(state, DictionaryObject):
+                    raise TypeError("Invalid PDF graphics state")  # noqa: TRY003
+                setting = state.get("/Font")
+                if setting is None or is_null_or_none(setting):
+                    continue
+                setting = setting.get_object()
+                if not isinstance(setting, ArrayObject) or len(setting) != 2:
+                    raise ValueError("Invalid PDF graphics state font setting")  # noqa: TRY003
+                font, size = setting[0].get_object(), setting[1].get_object()
             if not isinstance(font, DictionaryObject) or not font.get("/Subtype"):
                 raise ValueError("Invalid PDF text font")  # noqa: TRY003
-            font_selected = True
-        elif operator in (b"Tj", b"TJ", b"'", b'"') and not font_selected:
+            if not isinstance(size, NumberObject | FloatObject):
+                raise ValueError("Invalid PDF text font size")  # noqa: TRY003
+            font_setting = (font, size)
+            if operator == b"gs":
+                prepared.append(([_font_resource_name(fonts, font), size], b"Tf"))
+        elif operator in (b"Tj", b"TJ", b"'", b'"') and font_setting is None:
             raise ValueError("PDF text has no usable font")  # noqa: TRY003
         elif operator == b"Do":
             objects = resources["/XObject"]
@@ -123,16 +183,32 @@ def _validate_text_resources(  # noqa: C901 - PDF graphics state and resource op
             form = objects[operands[0]].get_object()
             if not isinstance(form, StreamObject):
                 raise ValueError("Invalid PDF XObject stream")  # noqa: TRY003
-            if form.get("/Subtype") == "/Form":
+            if form["/Subtype"] == "/Form":
                 if id(form) in ancestors:
                     raise ValueError("Cyclic PDF Form XObject")  # noqa: TRY003
-                _validate_text_resources(
-                    ContentStream(form, reader),
+                form_contents = ContentStream(form, reader, "bytes")
+                form_resources = _validate_text_resources(
+                    form_contents,
                     form.get("/Resources", resources).get_object(),
                     reader,
                     ancestors | {id(form)},
-                    font_selected,
+                    font_setting,
                 )
+                form_contents.update({
+                    key: value for key, value in form.items() if key not in ("/Length", "/Filter", "/DecodeParms")
+                })
+                form_contents[NameObject("/Resources")] = form_resources
+                objects = DictionaryObject(objects)
+                index = len(objects)
+                name = NameObject(f"/PowerContextForm{index}")
+                while name in objects:
+                    index += 1
+                    name = NameObject(f"/PowerContextForm{index}")
+                objects[name] = form_contents
+                resources[NameObject("/XObject")] = objects
+                prepared[-1] = ([name], b"Do")
+    contents.operations = prepared
+    return resources
 
 
 def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
@@ -158,9 +234,13 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
             pages = []
             for number, page in enumerate(reader.pages, 1):
                 # extract_text can silently treat malformed content as blank.
-                contents = page.get_contents()
-                if contents is not None:
-                    _validate_text_resources(contents, page.get("/Resources", DictionaryObject()).get_object(), reader)
+                raw_contents = page.get("/Contents")
+                if not is_null_or_none(raw_contents):
+                    contents = ContentStream(raw_contents, reader, "bytes")
+                    page[NameObject("/Resources")] = _validate_text_resources(
+                        contents, page.get("/Resources", DictionaryObject()).get_object(), reader
+                    )
+                    page[NameObject("/Contents")] = contents
                 text = page.extract_text()
                 pages.append(
                     PDFPageInput(

@@ -1,6 +1,6 @@
 # 第四题：财报 PDF 全文解析与证据页检索
 
-开发起点为 `0aec787fcd91184b0cee886299dd7388b6d454b9`，包含第二、三、五至十一题已完成成果，且包含冻结基线 `9db1753434162c0aa7c9f1189a1722e617880a52`。本题独立工作区和分支为 `powercontext-pdf` / `solution-pdf`。
+开发起点为 `0aec787fcd91184b0cee886299dd7388b6d454b9`，包含第二、三、五至十一题已完成成果，且包含冻结基线 `9db1753434162c0aa7c9f1189a1722e617880a52`。本题交付工作区和分支为 `powercontext-pdf` / `solution-pdf`。针对第四题提测反馈的修复与验证见 [PDF_REPAIR.md](PDF_REPAIR.md)。
 
 ## 要求、实现与验证清单
 
@@ -20,13 +20,13 @@
 
 `pdf_pages.py` 提供 `PDFDocumentInput`、`PDFPageInput`、`parse_pdf_document`、`PDF_PAGE_SOURCE_DEFINITION` 和重导出的 `search_pdf_pages`。解析使用比赛固定的 pypdf 6.19.0，直接读取完整输入字节；不做 OCR、不生成金融答案。完整原字节 SHA-256 使用小写十六进制。非空白文档 ID 原样保存，包括合法周边空白。
 
-解析按全部物理页顺序提取，正常空白页返回空文本。先检查文件完整性、页树、字体与 Form 资源，再完成所有页面提取；pypdf 可能静默恢复的错误也会检查，任何失败统一抛出 `ValueError`，无部分返回。支持空用户密码权限、继承资源、间接页树对象、旋转文本、Unicode 映射、Form 文字和无文本扫描页。非空密码文档明确失败。
+解析按全部物理页顺序提取，正常空白页返回空文本。先检查文件完整性、页树、字体与 Form 资源，再完成所有页面提取；pypdf 可能静默恢复的错误也会检查，任何失败统一抛出 `ValueError`，无部分返回。支持空用户密码权限、null/继承资源、间接页树对象、旋转文本、Unicode 映射、图形状态字体、Form 文字和无文本扫描页。图形状态与 Form 继承字体只在 reader 内规整为 pypdf 可正确解码的操作，不改变原始输入字节。非空密码文档明确失败。
 
 页级 Source 为原生 `CAPTURED`，完整保存文档 ID、文件摘要、物理页码与正文。Source name 是 `pdf:` 加三元组紧凑 JSON 的 SHA-256，共 68 个 ASCII 字符；编码边界明确，长 ID 不会截断。PDF 任意字节修订产生不同身份。标准投影严格为 `DOCUMENT_ID\nPAGE_TEXT`，metadata 仅含题面要求的三个键。注册、observation、Runtime ingestion、固定文本 pipeline 和 Memory 均使用原生链路。
 
-`_pdf_search.py` 只调用传入 scoped Memory 的 `search(mode="fts")` 和 `get`。以自然语言词项、短查询和通用财务近义词扩展召回候选，使用词频、逆文档频率、长度、标题短语、文档公司/年份匹配重排。通过真实 `memory.get` 核验引用后，保留单个 `pdf-page` 来源的 active 条目，按页级 Source 身份去重。公司、年份、问题 ID、页码均无固定答案表；不依赖解析进程状态、不读取数据库私有属性、不调用在线模型。
+`_pdf_search.py` 只调用传入 scoped Memory 的 `search(mode="fts")` 和 `get`。以自然语言词项、短查询、通用财务近义词和指标计算要素扩展召回候选，使用词频、逆文档频率、长度、标题短语重排；扩展短语去重，并优先匹配问题中明确提及的文档标识。通过真实 `memory.get` 核验引用后，保留单个 `pdf-page` 来源的 active 条目，按页级 Source 身份去重。公司、年份、问题 ID、页码均无固定答案表；不依赖解析进程状态、不读取数据库私有属性、不调用在线模型。
 
-普通 Memory 原本限制单条 8192 UTF-8 字节，密集 PDF 页会因此入库失败。`canonical.py` 和 `service.py` 仅对全部来源为 `pdf-page` 的正文使用现有 Source observation 的 4 MiB 上界，统一正文规范化、内容哈希及 gate 证据读取；普通、混合及无来源 Memory 仍保留 8192 字节限制。整份 observation 仍受 4 MiB 原生预算约束，payload 与 projection 重复保存文本也计入预算；超预算明确失败，绝不截断。
+普通 Memory 原本限制单条 8192 UTF-8 字节，密集 PDF 页会因此入库失败。`canonical.py` 和 `service.py` 仅对全部来源为 `pdf-page` 的正文使用现有 Source observation 的 4 MiB 上界，统一正文规范化、内容哈希及 gate 证据读取；普通、混合及无来源 Memory 仍保留 8192 字节限制。PDF-only 正文保持原始 Unicode 码点，哈希绑定精确正文；普通 Memory 的 NFC 规范化行为和已有哈希保持不变。整份 observation 仍受 4 MiB 原生预算约束，payload 与 projection 重复保存文本也计入预算；超预算明确失败，绝不截断。
 
 ## 完整公开报告验证
 
@@ -75,18 +75,20 @@ make -C competition test-pdf
 PYTHONPATH=src:. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 competition/.venv/bin/python -m pytest \
   -q -s -p pytest_asyncio.plugin -o asyncio_mode=auto \
   tests/sources/test_pdf_pages.py tests/sources/test_pdf_search.py \
-  tests/sources/test_pdf_structure.py tests/e2e/test_pdf_ingestion.py \
-  tests/e2e/test_pdf_dense_page.py tests/e2e/test_pdf_retrieval_quality.py
+  tests/sources/test_pdf_structure.py tests/sources/test_pdf_legal_resources.py \
+  tests/e2e/test_pdf_ingestion.py tests/e2e/test_pdf_dense_page.py \
+  tests/e2e/test_pdf_retrieval_quality.py tests/e2e/test_pdf_unicode_evidence.py \
+  tests/e2e/test_pdf_financial_metrics.py
 env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy \
   make -C competition test
 ```
 
 全题测试需要清除**该测试进程**的代理环境变量：宿主默认 SOCKS 代理使固定依赖里的 HTTP 客户端因未安装 `socksio` 而失败；未为此修改依赖或产品。系统代理配置保持原样。
 
-本分支保留第二题 CSV、第三题 Pi、第五题重排、第六题增量上下文、第七题数量触发、第八题 embedding、第九题生命周期、第十题证据选择、第十一题混合检索成果。最终具体计数、命令退出码、完整 commit、推送状态与提测字段记录在配套 `task4-delivery/README.md` 和 `verification.json` 中。
+本分支保留第二题 CSV、第三题 Pi、第五题重排、第六题增量上下文、第七题数量触发、第八题 embedding、第九题生命周期、第十题证据选择、第十一题混合检索成果。最终具体计数、命令退出码、完整 commit、推送状态与提测字段记录在配套 `task4-repair-delivery/README.md` 和 `verification.json` 中。
 
 最终 `make -C competition test` 退出 0，全部 **95 passed、0 failed、0 skipped**：CSV 17、Pi 15、PDF 6、重排 10、增量 14、数量触发 17、embedding 8、生命周期 4、证据选择 3、混合检索 1。`check-baseline` 退出 0。
 
-新增 42 项测试、相关 Source/Memory 147 项回归均通过。最后的测试类型标注修正后，受影响的 26 项解析/结构单测、10 项检索单测和 3 项入库/质量测试再次通过，产品源码哈希保持不变。附加容器以断网、1 CPU、2 GiB、512 pids、非 root、源码只读执行 PDF 官方 6 项和新增 42 项，均通过；镜像为固定摘要的 Debian Python 3.12，**不是官方 CentOS 镜像**，不能作为官方平台评分。
+PDF 自有 68 项测试、相关 Source/Memory 165 项回归均通过。额外验证的 5 份原始财报共 1134 页全部入库，重启后逐页回读一致，21 个问题的引用逐条回查通过。另有 240 页、16 个问题的财务指标检索测试，命中 22/22 个已知证据页对；四份真实财报的人工主报表检查命中 20/20。均非官方标注指标，详细范围见 PDF_REPAIR.md。附加容器以断网、1 CPU、2 GiB、512 pids、非 root、源码只读执行 PDF 官方 6 项，全部通过；镜像为固定摘要的 Debian Python 3.12，**不是官方 CentOS 镜像**，不能作为官方平台评分。
 
-产品四个变更文件 Ruff、格式和固定依赖环境 ty 检查通过。仓库全量 precommit 在独立临时副本执行，既有 competition 格式和基线类型问题导致退出 1；普通开发锁文件还未安装比赛固定的 pypdf。使用同一个 competition Python 环境进行全仓库类型对照，前置版本 363 条、本分支 361 条，新增诊断 0，消除原先两处缺少 PDF 模块的诊断。没有将全量自动格式化修改带回产品。
+本次变更的产品与测试文件 Ruff、格式和固定依赖环境定向 ty 检查通过。仓库全量 precommit 在独立临时副本执行，既有 competition 格式和基线类型问题导致退出 1；普通开发锁文件还未安装比赛固定的 pypdf。使用同一个 competition Python 环境进行全仓库类型对照，前置提测版本 361 条、修复版 361 条，新增诊断 0。没有将全量自动格式化修改带回产品。

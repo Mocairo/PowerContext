@@ -89,6 +89,47 @@ async def test_company_and_year_disambiguate_identical_tables():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("document_id,company", [("ORIONGROUP_2031_10K", "Orion-Group"), ("3M_2031_10K", "3M")])
+async def test_explicit_document_name_survives_other_company_candidate_crowding(document_id, company):
+    memory = ScopedSearch([
+        *(
+            entry(i, f"OTHER_2031_10K\nStatements of income\nNet income {i}\nNet earnings {i}\nTotal assets {i}")
+            for i in range(25)
+        ),
+        entry(25, f"{document_id}\nNet income 10\nAssets 50"),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), f"What figures determine {company}'s return on assets in 2031?", limit=1
+    )
+    assert [citation.entry_id for citation in citations] == ["entry-25"]
+
+
+@pytest.mark.asyncio
+async def test_document_names_match_whole_query_tokens_not_substrings():
+    memory = ScopedSearch([
+        entry(1, "TECH_2031_10K\nTechnical designs"),
+        entry(2, "ORION_2031_10K\nTechnical designs describe hydraulic interfaces"),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), "Which technical designs describe hydraulic interfaces?", limit=1
+    )
+    assert [citation.entry_id for citation in citations] == ["entry-2"]
+
+
+@pytest.mark.asyncio
+async def test_comparison_can_select_both_named_documents():
+    memory = ScopedSearch([
+        entry(1, "OTHER_2031_10K\nStatements of income\nNet income 900\nNet earnings 900\nTotal assets 900"),
+        entry(2, "ORIONGROUP_2031_10K\nNet income 10\nTotal assets 50"),
+        entry(3, "LYRA_2031_10K\nNet income 20\nTotal assets 80"),
+    ])
+    citations = await search_pdf_pages(
+        cast(ScopedMemoryApplication, memory), "Compare Orion Group and Lyra return on assets for 2031", limit=2
+    )
+    assert {citation.entry_id for citation in citations} == {"entry-2", "entry-3"}
+
+
+@pytest.mark.asyncio
 async def test_duplicates_filtered_but_revisions_and_documents_retained():
     memory = ScopedSearch([
         entry(1, "ALPHA\nOperating income 901", "alpha-revision-a-page-1"),
