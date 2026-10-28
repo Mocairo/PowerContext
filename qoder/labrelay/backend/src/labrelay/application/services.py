@@ -9,8 +9,11 @@ Task 3 importer, so the service sequences steps and nothing else decides them.
 
 Memory writes are the one deliberate degradation path here. Spec 20 requires a task
 completion to stay saved when the memory service is down, so a ``remember`` failure is
-logged and swallowed instead of failing the transition; scope creation (``ensure_scopes``)
-is *not* degraded, because without its two scopes a project has no memory identity at all.
+logged *and* appended as a ``memory_sync_failed`` TaskEvent rather than failing the
+transition: Task 6/14 need a machine-readable record to show 「记忆未同步」, and a warning line
+is not one. Scope creation (``ensure_scopes``) is *not* degraded, because without its two
+scope ids a project has no memory identity at all — so a gateway that hands back empty or
+missing ids is refused before the project is ever persisted.
 """
 
 from __future__ import annotations
@@ -37,6 +40,11 @@ logger = logging.getLogger("labrelay.application.services")
 DECISION_KIND = "decision"
 PROGRESS_KIND = "progress"
 
+# The two event types Task 5 appends. "evidence_submitted" and the replanning events arrive
+# with Task 11; until the vocabulary is complete these stay plain strings on the TaskEvent.
+STATUS_CHANGED_EVENT = "status_changed"
+MEMORY_SYNC_FAILED_EVENT = "memory_sync_failed"
+
 
 class LabRelayService:
     """Project creation, evidence import, retrieval and task progress for one project store."""
@@ -59,7 +67,11 @@ class LabRelayService:
         self.planner_config = planner_config or PlannerConfig()
 
     async def create_project(self, title: str, research_area: str, description: str) -> Project:
-        """Open a project, give it its two memory scopes and remember why it exists."""
+        """Open a project, give it its two memory scopes and remember why it exists.
+
+        Raises ``ValueError`` when the gateway hands back an empty or missing scope id: such
+        a project has no memory identity, so it is refused instead of persisted half-made.
+        """
         project = Project(
             id=f"project-{uuid.uuid4().hex}",
             title=title,
@@ -71,10 +83,21 @@ class LabRelayService:
         # The scopes come back from the gateway rather than being guessed here: PowerContext
         # owns their identifiers, and a project is only persisted once it has them.
         project_scope, learner_scope = await self.context.ensure_scopes(project)
+        # Both ids have to be real before anything is written. An empty scope would be stored
+        # as a usable one and every later memory call would silently target nothing, so this
+        # fails loudly instead — the only place Task 5 refuses a gateway answer.
+        if not project_scope or not learner_scope:
+            raise ValueError(
+                "ContextGateway must return two non-empty memory scope ids; "
+                f"project {project.id} was not created"
+            )
         project = project.model_copy(
             update={"project_scope_id": project_scope, "learner_scope_id": learner_scope}
         )
         await self.repository.save_project(project)
+        # A failed decision note cannot undo the project, and there is no task to attach a
+        # memory_sync_failed event to: the warning log is the record until Task 12's health
+        # check reports PowerContext availability.
         await self._remember(
             project.project_scope_id,
             DECISION_KIND,
@@ -105,7 +128,11 @@ class LabRelayService:
     async def update_task_status(
         self, task_id: str, status: str, payload: dict | None = None
     ) -> LearningTask:
-        """Apply one status transition, append its TaskEvent, sync memory when it completes."""
+        """Apply one status transition, append its TaskEvent, sync memory when it completes.
+
+        Completion appends a second event only if the learner-memory write failed; the
+        transition itself always lands first and stays landed.
+        """
         task = await self.repository.get_task(task_id)
         if task is None:
             raise KeyError(task_id)
@@ -120,7 +147,7 @@ class LabRelayService:
                 project_id=task.project_id,
                 plan_id=task.plan_id,
                 task_id=task.id,
-                event_type="status_changed",
+                event_type=STATUS_CHANGED_EVENT,
                 # ``from``/``to`` are written last so a caller payload can enrich the event
                 # but never rewrite which transition actually happened (spec 15, 16.1).
                 payload={**(payload or {}), "from": task.status, "to": status},
@@ -128,20 +155,47 @@ class LabRelayService:
             )
         )
         if status == "done":
-            await self._sync_progress_memory(updated)
+            failure = await self._sync_progress_memory(updated)
+            if failure is not None:
+                await self._append_memory_sync_failure(updated, failure)
         return updated
 
-    async def _sync_progress_memory(self, task: LearningTask) -> None:
-        """Hand the finished task to learner memory so a new session can recover progress."""
+    async def _sync_progress_memory(self, task: LearningTask) -> str | None:
+        """Hand the finished task to learner memory so a new session can recover progress.
+
+        Returns the exception class name when the write failed, else ``None``. A task whose
+        project was never saved is not a memory failure — no write was attempted — so it also
+        returns ``None``.
+        """
         project = await self.repository.get_project(task.project_id)
         if project is None:
-            return
-        await self._remember(
+            return None
+        return await self._remember(
             project.learner_scope_id,
             PROGRESS_KIND,
             f"已完成任务「{task.title}」。下一阶段重点：查看下一项可执行任务。",
             reason=f"task:{task.id}",
             project_id=project.id,
+        )
+
+    async def _append_memory_sync_failure(self, task: LearningTask, exception_class: str) -> None:
+        """Record a failed progress-memory write as its own append-only event (spec 20).
+
+        The payload carries the task id and the exception class name and nothing else: a
+        gateway error message can echo a request URL or an ``Authorization`` header, and
+        spec 19.1 keeps that out of both logs and stored state. The ``status_changed`` event
+        already written is never rewritten, because TaskEvents are append-only.
+        """
+        await self.repository.append_event(
+            TaskEvent(
+                id=f"event-{uuid.uuid4().hex}",
+                project_id=task.project_id,
+                plan_id=task.plan_id,
+                task_id=task.id,
+                event_type=MEMORY_SYNC_FAILED_EVENT,
+                payload={"task_id": task.id, "exception_class": exception_class},
+                occurred_at=datetime.now(UTC).isoformat(),
+            )
         )
 
     async def _remember(
@@ -152,11 +206,13 @@ class LabRelayService:
         *,
         reason: str,
         project_id: str,
-    ) -> None:
+    ) -> str | None:
         """Write one memory note, degrading to a warning if the memory service is down.
 
-        Only the exception type is logged: a gateway failure can echo a request URL or an
-        Authorization header, and spec 19.1 keeps credentials out of the logs entirely.
+        Returns the exception class name on failure and ``None`` on success, so the caller
+        can decide whether the failure is worth a durable record; the use case itself always
+        finishes. Only the exception type is logged: a gateway failure can echo a request
+        URL or an Authorization header, and spec 19.1 keeps credentials out of the logs.
         """
         try:
             await self.context.remember(scope_id, kind, text, reason=reason)
@@ -169,3 +225,5 @@ class LabRelayService:
                 kind,
                 type(exc).__name__,
             )
+            return type(exc).__name__
+        return None

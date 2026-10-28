@@ -75,6 +75,18 @@ class ExplodingContext(RecordingContext):
         raise RuntimeError(self.message)
 
 
+class BadScopeContext(RecordingContext):
+    """A gateway that hands back empty or missing scope identifiers."""
+
+    def __init__(self, scopes: tuple[object, object]) -> None:
+        super().__init__()
+        self.scopes = scopes
+
+    async def ensure_scopes(self, project):
+        self.scoped_projects.append(project)
+        return self.scopes
+
+
 def citation(asset_id: str = "asset-1", kind: str = "note") -> Citation:
     return Citation(
         asset_id=asset_id,
@@ -344,6 +356,61 @@ async def test_assessments_round_trip_with_their_project() -> None:
     assert await repository.get_assessment("assessment-unknown") is None
 
 
+async def test_save_assessment_never_lets_the_payload_restate_its_identity() -> None:
+    """Task 10 files model JSON here; the caller decides which row and project it is.
+
+    An assessment body that carries ``id``/``project_id`` must not be able to rehome itself
+    into another project's row — the same rule the task event enforces on ``from``/``to``.
+    """
+    repository = InMemoryRepository()
+
+    await repository.save_assessment(
+        "assessment-1",
+        "project-1",
+        {"id": "assessment-999", "project_id": "project-2", "score": 3},
+    )
+
+    assert await repository.get_assessment("assessment-1") == {
+        "id": "assessment-1",
+        "project_id": "project-1",
+        "score": 3,
+    }
+    assert list(repository.assessments) == ["assessment-1"]
+    assert await repository.get_assessment("assessment-999") is None
+
+    await repository.save_assessment("assessment-2", "project-3", {"id": "assessment-1"})
+
+    stored = await repository.get_assessment("assessment-2")
+    assert (stored["id"], stored["project_id"]) == ("assessment-2", "project-3")
+    assert (await repository.get_assessment("assessment-1"))["project_id"] == "project-1"
+
+
+async def test_assessment_rows_are_deep_copied_on_the_way_in_and_out() -> None:
+    """A nested answer must not stay a window into the store, in either direction."""
+    repository = InMemoryRepository()
+    payload: dict[str, object] = {"score": 3, "answers": {"q1": ["weak"]}}
+
+    await repository.save_assessment("assessment-1", "project-1", payload)
+    payload["score"] = 99
+    payload["answers"]["q1"].append("caller mutation")
+    payload["answers"]["q2"] = ["new"]
+
+    assert await repository.get_assessment("assessment-1") == {
+        "id": "assessment-1",
+        "project_id": "project-1",
+        "score": 3,
+        "answers": {"q1": ["weak"]},
+    }
+
+    stored = await repository.get_assessment("assessment-1")
+    stored["answers"]["q1"].append("reader mutation")
+    stored["answers"]["q3"] = ["invented"]
+
+    assert (await repository.get_assessment("assessment-1"))["answers"] == {"q1": ["weak"]}
+    # The store never writes back through the reference the caller handed it either.
+    assert payload["answers"] == {"q1": ["weak", "caller mutation"], "q2": ["new"]}
+
+
 async def test_events_are_append_only_and_scoped_to_one_project() -> None:
     repository = InMemoryRepository()
     service = make_service(repository=repository)
@@ -407,6 +474,32 @@ async def test_create_project_survives_a_memory_write_failure(caplog) -> None:
 
     assert await repository.get_project(project.id) == project
     assert "memory sync failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        ("", ""),
+        ("project:scope", ""),
+        ("", "learner:scope"),
+        (None, None),
+        (None, "learner:scope"),
+        ("project:scope", None),
+    ],
+)
+async def test_create_project_refuses_to_persist_without_two_usable_scopes(
+    scopes: tuple[object, object],
+) -> None:
+    """No scopes means no memory identity, so the project is never written and never remembered."""
+    repository = InMemoryRepository()
+    context = BadScopeContext(scopes)
+    service = make_service(repository=repository, context=context)
+
+    with pytest.raises(ValueError, match="two non-empty memory scope ids"):
+        await service.create_project("Aurora", "DL", "one")
+
+    assert repository.projects == {}
+    assert context.remembered == []
 
 
 # --- import_project_files ------------------------------------------------------
@@ -643,6 +736,8 @@ async def test_completing_a_task_writes_learner_memory_through_the_gateway() -> 
         )
     ]
     assert (await repository.list_events(project.id))[0].payload["summary"] == "已复述规则"
+    # A memory write that succeeded leaves no failure record behind.
+    assert [e.event_type for e in await repository.list_events(project.id)] == ["status_changed"]
 
 
 async def test_a_blocked_task_is_recorded_without_touching_learner_memory() -> None:
@@ -664,8 +759,9 @@ async def test_a_blocked_task_is_recorded_without_touching_learner_memory() -> N
 async def test_memory_failure_keeps_the_progress_and_the_event(caplog) -> None:
     """Spec 20: a failed memory write must never lose a saved transition.
 
-    The banner that tells the learner memory is stale is Task 6/14 work; here the service
-    must keep the task, keep the event, degrade loudly in the log and stay up.
+    The transition and its ``status_changed`` event stay exactly as they were; the failure is
+    appended as its own ``memory_sync_failed`` event, because a warning line alone is not a
+    machine-readable record Task 6/14 can render 「进度已保存但跨会话记忆未同步」 from.
     """
     repository = InMemoryRepository()
     service = make_service(repository=repository, context=ExplodingContext())
@@ -674,13 +770,47 @@ async def test_memory_failure_keeps_the_progress_and_the_event(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger=SERVICE_LOGGER):
         done = await service.update_task_status("task-1", "done", {"summary": "完成"})
 
+    events = await repository.list_events("project-1")
     assert done.status == "done"
     assert (await repository.get_task("task-1")).status == "done"
-    assert [e.event_type for e in await repository.list_events("project-1")] == ["status_changed"]
+    assert [event.event_type for event in events] == ["status_changed", "memory_sync_failed"]
+    # The successful transition event is untouched by the failure that followed it.
+    assert events[0].payload == {"from": "in_progress", "to": "done", "summary": "完成"}
     assert "memory sync failed" in caplog.text
     assert "learner:project-1" in caplog.text
-    # Spec 19.1: a gateway error message never travels into the log.
+    # Spec 19.1: a gateway error message never travels into the log or into the event trail.
     assert "super-secret-value" not in caplog.text
+    assert "super-secret-value" not in str(events)
+
+
+async def test_the_memory_sync_failure_event_names_only_the_task_and_the_error_class() -> None:
+    """The failure record is append-only and carries identifiers, never memory content."""
+    repository = InMemoryRepository()
+    service = make_service(repository=repository, context=ExplodingContext())
+    project = await seed(repository, make_task("task-1", status="in_progress"))
+
+    await service.update_task_status("task-1", "done")
+
+    status_changed, failure = await repository.list_events(project.id)
+    assert failure.id.startswith("event-") and failure.id != status_changed.id
+    assert (failure.project_id, failure.plan_id, failure.task_id) == (
+        project.id,
+        "plan-1",
+        "task-1",
+    )
+    assert failure.event_type == "memory_sync_failed"
+    assert failure.payload == {"task_id": "task-1", "exception_class": "RuntimeError"}
+    assert failure.occurred_at.endswith("+00:00")
+
+
+async def test_a_transition_that_needs_no_memory_writes_no_failure_event() -> None:
+    repository = InMemoryRepository()
+    service = make_service(repository=repository, context=ExplodingContext())
+    await seed(repository, make_task("task-1", status="todo"))
+
+    await service.update_task_status("task-1", "in_progress")
+
+    assert [e.event_type for e in await repository.list_events("project-1")] == ["status_changed"]
 
 
 async def test_completing_a_task_of_a_project_that_was_never_saved_stays_quiet() -> None:
@@ -693,3 +823,5 @@ async def test_completing_a_task_of_a_project_that_was_never_saved_stays_quiet()
 
     assert done.status == "done"
     assert context.remembered == []
+    # A task with no project record attempts no memory write at all, so it reports no failure.
+    assert [e.event_type for e in await repository.list_events("project-1")] == ["status_changed"]

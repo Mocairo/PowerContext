@@ -9,10 +9,14 @@ interchangeable behind the port and no caller has to learn which store it got.
 State is copied on the way in and on the way out: the repository owns its rows. A planner
 that keeps holding the ``LearningPlan`` it saved must not be able to rewrite stored state
 by mutating that object, and a reader must not be able to persist a change without calling
-``save_*`` — which is exactly the behaviour the SQL repository will have.
+``save_*`` — which is exactly the behaviour the SQL repository will have. The copy is deep, so
+a nested value inside a plain-dict row (an assessment answer) is not a live window into the
+store in either direction.
 """
 
 from __future__ import annotations
+
+from copy import deepcopy
 
 from labrelay.domain.models import Asset, LearningPlan, LearningTask, Project, TaskEvent
 
@@ -57,15 +61,21 @@ class InMemoryRepository:
     async def save_assessment(
         self, assessment_id: str, project_id: str, payload: dict[str, object]
     ) -> None:
-        self.assessments[assessment_id] = {
-            "id": assessment_id,
-            "project_id": project_id,
-            **payload,
-        }
+        """File one assessment under the identity the caller named, deep-copied.
+
+        ``id``/``project_id`` are written last for the same reason the task event records the
+        real transition: the payload is model output (Task 10) and must not rehome itself into
+        another project's row by carrying those keys. The deep copy keeps the caller's nested
+        answers out of the store — Task 10 keeps the assessment JSON alive after filing it.
+        """
+        self.assessments[assessment_id] = deepcopy(
+            {**payload, "id": assessment_id, "project_id": project_id}
+        )
 
     async def get_assessment(self, assessment_id: str) -> dict[str, object] | None:
+        """A detached copy, so a reader cannot edit a stored answer without saving it back."""
         stored = self.assessments.get(assessment_id)
-        return dict(stored) if stored is not None else None
+        return deepcopy(stored) if stored is not None else None
 
     async def save_plan(self, plan: LearningPlan) -> None:
         """Store the plan and index its tasks, so a plan id is never a dangling reference."""
