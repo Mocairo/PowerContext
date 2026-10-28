@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, model_validator
 
 AssetKind = Literal["paper", "code", "config", "experiment", "note", "operations", "other"]
 TaskStatus = Literal[
@@ -78,12 +78,11 @@ class LearningTask(BaseModel):
     status: TaskStatus = "locked"
     task_type: Literal["citation_required", "self_assessment"] = "citation_required"
 
-    @field_validator("citations")
-    @classmethod
-    def require_citation(cls, citations: list[Citation], info) -> list[Citation]:
-        if info.data.get("task_type", "citation_required") == "citation_required" and not citations:
+    @model_validator(mode="after")
+    def require_citation(self) -> LearningTask:
+        if self.task_type == "citation_required" and not self.citations:
             raise ValueError("Learning task requires a citation")
-        return citations
+        return self
 
 
 class LearningPlan(BaseModel):
