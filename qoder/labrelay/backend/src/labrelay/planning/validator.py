@@ -28,7 +28,7 @@ STAGE_ORDER = "stage_order"
 ENVIRONMENT_BEFORE_EXPERIMENTS = "environment_before_experiments"
 UNKNOWN_PREREQUISITE = "unknown_prerequisite"
 DEPENDENCY_CYCLE = "dependency_cycle"
-MISSING_CITATION = "missing_citation"
+PREREQUISITE_REQUIRED = "prerequisite_required"
 UNKNOWN_ASSET = "unknown_asset"
 RESTRICTED_ASSET = "restricted_asset"
 CITATION_KIND_MISMATCH = "citation_kind_mismatch"
@@ -77,10 +77,11 @@ def validate_plan_sync(
     _check_task_identity(plan)
     _check_stage_order(plan, config)
     _check_dependencies(plan.tasks)
+    _check_activation_invariant(plan.tasks)
 
     assets_by_id = {asset.id: asset for asset in assets}
     for task in plan.tasks:
-        _check_citations(task, plan, assets_by_id, config)
+        _check_citations(task, plan, assets_by_id)
 
     return plan.model_copy(update={"tasks": [_mark_material_gaps(task) for task in plan.tasks]})
 
@@ -104,7 +105,7 @@ def _check_stage_order(plan: LearningPlan, config: PlannerConfig) -> None:
             raise PlanValidationError(
                 f"plan {plan.id} uses an unknown stage: {stage}", reason=UNKNOWN_STAGE
             )
-    if stages != sorted(stages):
+    if config.enforce_stage_order and stages != sorted(stages):
         raise PlanValidationError("plan stages must be non-decreasing", reason=STAGE_ORDER)
     if config.environment_before_experiments:
         has_environment = any(stage == 2 for stage in stages)
@@ -144,17 +145,34 @@ def _detect_cycle(
     visited.add(task_id)
 
 
+def _check_activation_invariant(tasks: list[LearningTask]) -> None:
+    """Every learner-facing task past stage 0 has to sit on something.
+
+    The activation rule (see :mod:`labrelay.planning.generator`) opens a plan by turning the
+    prerequisite-free roots ``locked -> todo``. A stage > 0 task with no prerequisite is therefore
+    either an *immediate* day-one task the seven-stage path never intended (a learner handed the
+    paper before the orientation) or a permanently unreachable one once the roots close — both
+    corrupt the chain Task 11 unlocks step by step. Stage 0 is the only legal entry point, so a
+    stage > 0 task must name at least one prerequisite.
+    """
+    for task in tasks:
+        if task.stage > 0 and not task.prerequisite_task_ids:
+            raise PlanValidationError(
+                f"a stage {task.stage} task must name at least one prerequisite",
+                reason=PREREQUISITE_REQUIRED,
+            )
+
+
 def _check_citations(
     task: LearningTask,
     plan: LearningPlan,
     assets_by_id: dict[str, Asset],
-    config: PlannerConfig,
 ) -> None:
-    if task.task_type == "citation_required":
-        if config.every_task_requires_citation and not task.citations:
-            raise PlanValidationError(
-                f"citation_required task {task.id} must cite evidence", reason=MISSING_CITATION
-            )
+    # A ``citation_required`` task with no citation cannot be constructed at all — that rule lives
+    # in :meth:`labrelay.domain.models.LearningTask.require_citation` and the generator reports it
+    # as ``invalid_task_payload`` — so there is no missing-citation branch to take here. What is
+    # left to check is whether each citation the task *does* carry resolves to this project's own
+    # active evidence.
     for citation in task.citations:
         asset = assets_by_id.get(citation.asset_id)
         if asset is None or asset.project_id != plan.project_id:

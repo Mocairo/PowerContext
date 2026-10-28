@@ -130,7 +130,7 @@ def full_plan_tasks() -> list[dict[str, Any]]:
     """A seven-stage plan whose evidence is complete, so it is expected to activate."""
     return [
         task_payload("orientation", 0, "ops-1"),
-        task_payload("paper", 1, "note-1"),
+        task_payload("paper", 1, "note-1", ("orientation",)),
         task_payload("environment", 2, "config-1", ("orientation",)),
         task_payload("code", 3, "code-1", ("environment",)),
         baseline_task_payload("baseline", ("code",)),
@@ -254,6 +254,7 @@ async def make_service(
     model: Any | None = None,
     context: FakeContext | None = None,
     assets_are_searchable: bool = True,
+    planner_config: PlannerConfig | None = None,
 ) -> tuple[LabRelayService, Project]:
     """A service on the real repository with fake engine, memory and model doubles."""
     repository = InMemoryRepository()
@@ -277,6 +278,6 @@ async def make_service(
         FakeSearch(searchable),
         context if context is not None else FakeContext(),
         model if model is not None else ModelReturning(dict(model_response or {})),
-        PlannerConfig(),
+        planner_config if planner_config is not None else PlannerConfig(),
     )
     return service, project

@@ -9,16 +9,17 @@ The order below is spec 15.2 and every step earns its place:
 4. build ``LearningTask`` rows and hand the plan to :mod:`labrelay.planning.validator`,
 5. save, and activate **only** when no task still says ``needs_material``.
 
-Two decisions are deliberate. The ``plan_id`` is minted *before* the model call and sent with the
-payload, because generated task ids have to be namespaced per plan version: a second plan for the
-same assessment must not write onto the first plan's primary keys (the carry-forward from Task 8).
-And a gap never raises: an under-evidenced baseline is a real, useful answer, so the plan is kept
-as a draft, the reason is logged once with a stable code, and the learner pointer stays where it
-was.
+Two decisions are deliberate. The stored task ids are namespaced server-side from the ``plan_id``
+minted before the model call — never from the model's own ids and never from prompt compliance —
+because a second plan for the same assessment must not write onto the first plan's primary keys
+(the carry-forward from Task 8). And a gap never raises: an under-evidenced baseline is a real,
+useful answer, so the plan is kept as a draft, the reason is logged once with a stable code, and
+the learner pointer stays where it was.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 
@@ -34,7 +35,7 @@ from labrelay.planning.stages import (
     STAGE_QUERY_PREFIX,
     stage_required_kinds,
 )
-from labrelay.planning.validator import PlanValidationError, validate_plan
+from labrelay.planning.validator import MAX_TASK_ID_LENGTH, PlanValidationError, validate_plan
 
 logger = logging.getLogger("labrelay.planning.generator")
 
@@ -60,9 +61,40 @@ SYSTEM_PROMPT = (
 )
 
 
+#: ``task.id``/``task_events.task_id`` are VARCHAR(64); the namespace tag is a short digest of the
+#: plan id so a model-authored suffix still fits inside the column while staying plan-scoped.
+TASK_ID_NAMESPACE_CHARS = 12
+
+
 def new_plan_id() -> str:
     """A plan version's own identity, which also namespaces the task ids generated for it."""
     return f"plan-{uuid.uuid4().hex}"
+
+
+def _task_id_namespace(plan_id: str) -> str:
+    """A stable, plan-scoped tag: every stored task id of this version starts with it.
+
+    It is derived only from ``plan_id`` and never from the model, so two plan versions of one
+    project can not collide on a ``learning_task.id`` primary key regardless of what ids the model
+    invented (spec 15.2, the Task 8 carry-forward).
+    """
+    return hashlib.sha256(plan_id.encode("utf-8")).hexdigest()[:TASK_ID_NAMESPACE_CHARS]
+
+
+def _stored_task_id(namespace: str, raw_key: str) -> str:
+    """Fold a model-provided task id into the plan's own id space, capped to the column width.
+
+    Short natural ids (``orientation``, ``paper``) keep their readable suffix behind the namespace
+    tag; an id that would overflow VARCHAR(64) is truncated and given a stable digest of the *full*
+    raw id, so two different over-long ids never collapse onto the same stored key.
+    """
+    prefix = f"t{namespace}-"
+    candidate = f"{prefix}{raw_key}"
+    if len(candidate) <= MAX_TASK_ID_LENGTH:
+        return candidate
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
+    room = MAX_TASK_ID_LENGTH - len(prefix) - len(digest) - 1
+    return f"{prefix}{raw_key[:room]}-{digest}"
 
 
 async def generate_learning_plan(
@@ -145,24 +177,45 @@ async def _retrieve_stage_evidence(
 def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> list[LearningTask]:
     """Read the model's task list into the domain, with this project's identity written last.
 
-    ``project_id`` and ``plan_id`` come from the caller rather than the answer: a plan is stored
-    per project, and the task ids it contains were generated for one plan version only.
+    ``project_id`` and ``plan_id`` come from the caller rather than the answer. Crucially, the
+    *stored* task id is derived server-side from ``plan_id`` too, and every prerequisite reference
+    is rewritten through the same mapping: a model that names its tasks ``orientation``, ``paper``
+    cannot make two plan versions collide on the primary key, and the id it "used" is only ever an
+    input to the mapping, never what gets persisted.
     """
     raw_tasks = model_response.get("tasks") if isinstance(model_response, dict) else None
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise PlanValidationError(
             "the model answer carries no task list", reason=INVALID_TASK_PAYLOAD
         )
-    tasks: list[LearningTask] = []
-    for entry in raw_tasks:
+
+    namespace = _task_id_namespace(plan_id)
+    entries: list[tuple[dict[str, object], list[object]]] = []
+    id_map: dict[str, str] = {}
+    for index, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
             raise PlanValidationError(
                 "the model answer carries a task that is not an object",
                 reason=INVALID_TASK_PAYLOAD,
             )
+        payload = dict(entry)
+        raw_key = _raw_task_key(payload.get("id"), index)
+        # First-seen wins: two model tasks that share a raw id keep the same stored id so the
+        # duplicate is reported by the validator, not silently merged apart here.
+        stored_id = id_map.setdefault(raw_key, _stored_task_id(namespace, raw_key))
+        payload["id"] = stored_id
+        entries.append((payload, list(payload.get("prerequisite_task_ids") or [])))
+
+    tasks: list[LearningTask] = []
+    for payload, raw_prerequisites in entries:
+        payload["prerequisite_task_ids"] = [
+            _rewrite_prerequisite(namespace, raw_key, id_map) for raw_key in raw_prerequisites
+        ]
         try:
             tasks.append(
-                LearningTask.model_validate({**entry, "project_id": project.id, "plan_id": plan_id})
+                LearningTask.model_validate(
+                    {**payload, "project_id": project.id, "plan_id": plan_id}
+                )
             )
         except ValidationError as exc:
             # Field counts only: the rejected answer is model-authored text and stays out of any
@@ -174,12 +227,44 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
     return tasks
 
 
-async def _activate(repository: Repository, plan: LearningPlan, project: Project) -> LearningPlan:
-    """Open the plan and make its roots executable, then point the project at it.
+def _raw_task_key(raw_id: object, index: int) -> str:
+    """The model's own id used only as a mapping key; a missing one falls back to its position."""
+    text = raw_id.strip() if isinstance(raw_id, str) else (str(raw_id).strip() if raw_id else "")
+    return text or f"task-{index}"
 
-    Only a task with no prerequisites leaves ``locked``; the rest of the chain is unlocked by
-    Task 11's progress rules, so a fresh plan never hands a learner stage 4 on day one.
+
+def _rewrite_prerequisite(namespace: str, raw_key: object, id_map: dict[str, str]) -> str:
+    """Map one model prerequisite reference into the plan's id space.
+
+    A reference to a task the model actually named resolves to that task's stored id; a stray one
+    is namespaced the same way so it stays visibly foreign and the validator still reports it as an
+    unknown prerequisite rather than accidentally matching a real row.
     """
+    key = raw_key.strip() if isinstance(raw_key, str) else (str(raw_key).strip() if raw_key else "")
+    if key in id_map:
+        return id_map[key]
+    return _stored_task_id(namespace, key or "unknown")
+
+
+async def _activate(
+    repository: Repository, plan: LearningPlan, project: Project
+) -> LearningPlan:
+    """Open the plan, make its roots executable, supersede the previous active plan, repoint.
+
+    The validator guarantees a prerequisite-free task is a stage 0 task, so only entry-point
+    stages ever leave ``locked`` here; the rest of the chain is unlocked by Task 11's progress
+    rules, so a fresh plan never hands a learner stage 4 on day one.
+
+    Superseding happens before the project pointer moves: a project must never hold two plans
+    with ``status == "active"`` at once. A prior draft/superseded plan is left untouched; only a
+    previous *active* plan is demoted, which keeps re-generation from corrupting active-plan state
+    even though Task 11 owns the richer replanning rules.
+    """
+    if project.active_plan_id and project.active_plan_id != plan.id:
+        previous = await repository.get_plan(project.active_plan_id)
+        if previous is not None and previous.status == "active":
+            await repository.save_plan(previous.model_copy(update={"status": "superseded"}))
+
     tasks: list[LearningTask] = []
     for task in plan.tasks:
         if task.status == LOCKED_STATUS and not task.prerequisite_task_ids:

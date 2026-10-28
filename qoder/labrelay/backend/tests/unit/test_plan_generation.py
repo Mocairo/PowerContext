@@ -24,10 +24,13 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from labrelay.application.services import LabRelayService
 from labrelay.config import PlannerConfig
 from labrelay.domain.assessment import Assessment, build_assessment
-from labrelay.domain.models import LearningTask
+from labrelay.domain.models import LearningTask, Project
+from labrelay.importers.assets import import_directory
 from labrelay.model.fake import DeterministicModelGateway
+from labrelay.persistence.memory import InMemoryRepository
 from labrelay.planning.generator import (
     HANDOFF_QUERY,
     PLANNING_STAGES,
@@ -36,8 +39,10 @@ from labrelay.planning.generator import (
 )
 from labrelay.planning.stages import STAGE_QUERY_PREFIX, STAGE_REQUIRED_KINDS
 from labrelay.planning.validator import PlanValidationError
+from labrelay.retrieval.in_memory import InMemorySearchEngine
 from tests.helpers_planning import (
     ASSET_KIND_BY_ID,
+    FakeContext,
     advanced_assessment_payload,
     asset,
     baseline_task_payload,
@@ -197,11 +202,12 @@ async def test_generate_plan_activates_a_fully_evidenced_plan() -> None:
     assert stored_project is not None and stored_project.active_plan_id == plan.id
     assert [task.stage for task in plan.tasks] == sorted(task.stage for task in plan.tasks)
     assert all(task.citations for task in plan.tasks)
-    # Only the roots become executable; the chain unlocks through Task 11's progress rules.
-    # Both stage 0 and stage 1 were generated without prerequisites, so both are open on day one.
+    # Only the stage 0 roots become executable; the chain unlocks through Task 11's progress rules.
+    # Every stage > 0 task carries a prerequisite (the activation invariant), so only orientation
+    # is a prerequisite-free entry point and only it leaves ``locked`` on day one.
     assert [task.status for task in plan.tasks] == [
         "todo",
-        "todo",
+        "locked",
         "locked",
         "locked",
         "locked",
@@ -273,17 +279,61 @@ async def test_generated_task_ids_are_namespaced_by_plan_id() -> None:
     assert stored is not None and [t.id for t in stored.tasks] == [t.id for t in second.tasks]
 
 
-async def test_generation_still_uses_the_assessment_id_when_no_plan_id_is_given() -> None:
-    """A gateway that ignores ``plan_id`` (an older fake, a real model) still yields valid ids."""
+async def test_task_ids_are_namespaced_server_side_even_when_the_gateway_ignores_plan_id() -> None:
+    """C1: the store's task ids never come from the gateway — the server rewrites them per plan.
+
+    A gateway that ignores the ``plan_id`` it was handed (an older fake, a real model that only
+    names tasks ``orientation``/``paper``) still produces plan-scoped, bounded ids: the
+    :func:`_parse_tasks` mapping is the authority, not the model and not prompt compliance.
+    """
     service, project = await make_service(assets=make_assets(), model_response={})
     service.model = LegacyStyleGateway()
     assessment = await submit(service)
 
-    plan = await service.generate_plan(project.id, assessment.id)
+    first = await service.generate_plan(project.id, assessment.id)
+    second = await service.generate_plan(project.id, assessment.id)
 
-    assert [task.id for task in plan.tasks] == [
-        f"{assessment.id}-stage-{stage}" for stage in range(7)
-    ]
+    assert all(len(task.id) <= 64 for task in first.tasks + second.tasks)
+    assert {task.id for task in first.tasks}.isdisjoint({task.id for task in second.tasks})
+    assert all(task.plan_id == first.id for task in first.tasks)
+
+
+NATURAL_IDS = ["orientation", "paper", "environment", "code", "baseline", "next", "summary"]
+
+
+async def test_two_plans_from_a_raw_model_gateway_stay_disjoint_and_intact() -> None:
+    """C1 regression: a raw model that returns natural ids must not collide across versions.
+
+    Two consecutive plans for one project replay the *same* natural task ids (``orientation``,
+    ``paper`` ...). Without server-side namespacing they would share ``learning_task.id`` primary
+    keys and the second plan would overwrite the first's rows. They must instead land in disjoint
+    id spaces with both versions readable back intact.
+    """
+    service, project = await make_service(
+        assets=make_assets(), model_response=plan_response(full_plan_tasks())
+    )
+    assessment = await submit(service)
+
+    first = await service.generate_plan(project.id, assessment.id)
+    second = await service.generate_plan(project.id, assessment.id)
+
+    assert {task.id for task in first.tasks}.isdisjoint({task.id for task in second.tasks})
+    assert len({task.id for task in first.tasks + second.tasks}) == 14
+    assert all(len(task.id) <= 64 for task in first.tasks + second.tasks)
+    # the natural suffix survives inside the namespaced id
+    assert [task.id.rsplit("-", 1)[-1] for task in first.tasks] == NATURAL_IDS
+    # each plan's prerequisites resolve inside its own id space
+    for plan in (first, second):
+        own = {task.id for task in plan.tasks}
+        for task in plan.tasks:
+            assert set(task.prerequisite_task_ids) <= own
+            assert task.plan_id == plan.id
+    # get_plan and get_task both still return this version's rows
+    for plan in (first, second):
+        reread = await service.repository.get_plan(plan.id)
+        assert [task.id for task in reread.tasks] == [task.id for task in plan.tasks]
+        for task in plan.tasks:
+            assert (await service.repository.get_task(task.id)).plan_id == plan.id
 
 
 class LegacyStyleGateway:
@@ -300,6 +350,63 @@ class LegacyStyleGateway:
     async def generate_json(self, system_prompt, user_payload):
         stripped = {key: value for key, value in user_payload.items() if key != "plan_id"}
         return await self._inner.generate_json(system_prompt, stripped)
+
+
+async def test_generation_over_the_real_engine_reaches_citations_into_the_plan(
+    tmp_path: Path,
+) -> None:
+    """I1: the real InMemorySearchEngine + import_directory, not a FakeSearch double.
+
+    Proves stage evidence and citations from actually-imported files reach the generated plan and
+    resolve back to those assets, so the retrieval-backed guarantee holds at the real port boundary.
+    """
+    source = tmp_path / "handoff"
+    source.mkdir()
+    (source / "train.py").write_text("def train():\n    return run_baseline()\n", encoding="utf-8")
+    (source / "config.yaml").write_text("learning_rate: 0.1\nepochs: 30\n", encoding="utf-8")
+    (source / "experiment_results.csv").write_text("run,accuracy\n1,0.81\n", encoding="utf-8")
+    (source / "handoff.md").write_text("项目目标 研究问题 核心方法 结论\n", encoding="utf-8")
+    (source / "server_runbook.md").write_text("资源申请 资源释放 禁止事项\n", encoding="utf-8")
+
+    repository = InMemoryRepository()
+    await repository.initialize()
+    project = Project(
+        id="project-1",
+        title="Aurora",
+        research_area="DL",
+        description="baseline",
+        project_scope_id="project:project-1",
+        learner_scope_id="learner:project-1",
+    )
+    await repository.save_project(project)
+
+    gateway = DeterministicModelGateway()
+    engine = InMemorySearchEngine(model=gateway)
+    result = await import_directory(repository, engine, project.id, source)
+    assert result["failed"] == 0
+    # ``ImportResult.assets`` is a persisted *count*; the Asset records themselves live in the
+    # repository, so the evidence assertions read them back from there.
+    imported_assets = list(repository.assets.values())
+    assert result["assets"] == len(imported_assets)
+    imported_kinds = {record.kind for record in imported_assets}
+    assert {"code", "config", "experiment"} <= imported_kinds
+
+    service = LabRelayService(repository, engine, FakeContext(), gateway, PlannerConfig())
+    assessment = await service.submit_assessment(project.id, valid_assessment_payload())
+    plan = await service.generate_plan(project.id, assessment.id)
+
+    active_asset_ids = {
+        record.id for record in imported_assets if record.status == "active"
+    }
+    cited_ids = {citation.asset_id for task in plan.tasks for citation in task.citations}
+    # Every citation the plan carries resolves to a real, active asset the importer persisted.
+    assert cited_ids
+    assert cited_ids <= active_asset_ids
+
+    baseline = next(task for task in plan.tasks if task.stage == 4)
+    cited_kinds = {citation.kind for citation in baseline.citations}
+    assert {"code", "config", "experiment"} <= cited_kinds
+    assert plan.status == "active"
 
 
 # --- validation ----------------------------------------------------------------
@@ -388,6 +495,77 @@ async def test_an_unacceptable_plan_is_rejected(tasks, reason: str, fragment: st
     stored = await service.repository.get_project(project.id)
     assert stored is not None and stored.active_plan_id is None
     assert service.repository.plans == {}
+
+
+async def test_a_non_root_stage_task_without_a_prerequisite_is_rejected() -> None:
+    """I2: the activation invariant — only a stage 0 task may be a prerequisite-free root."""
+    tasks = [task_payload("orientation", 0, "ops-1"), task_payload("orphan", 2, "config-1")]
+    service, project = await make_service(assets=make_assets(), model_response=plan_response(tasks))
+    assessment = await submit(service)
+
+    with pytest.raises(PlanValidationError) as refused:
+        await service.generate_plan(project.id, assessment.id)
+
+    assert refused.value.reason == "prerequisite_required"
+    assert service.repository.plans == {}
+    stored = await service.repository.get_project(project.id)
+    assert stored is not None and stored.active_plan_id is None
+
+
+async def test_reactivating_supersedes_the_previous_active_plan() -> None:
+    """Minor: a second generated plan must not leave two plans ``active`` for one project."""
+    service, project = await make_service(assets=make_assets(), model=DeterministicModelGateway())
+    assessment = await submit(service)
+
+    first = await service.generate_plan(project.id, assessment.id)
+    second = await service.generate_plan(project.id, assessment.id)
+
+    assert (await service.repository.get_plan(first.id)).status == "superseded"
+    assert (await service.repository.get_plan(second.id)).status == "active"
+    active = [plan for plan in service.repository.plans.values() if plan.status == "active"]
+    assert [plan.id for plan in active] == [second.id]
+    stored = await service.repository.get_project(project.id)
+    assert stored is not None and stored.active_plan_id == second.id
+
+
+@pytest.mark.parametrize("minutes", [0, 5000])
+async def test_malformed_estimated_minutes_is_rejected(minutes: int) -> None:
+    """A domain bound (1..2880) keeps model noise out of the UI."""
+    tasks = [task_payload("a", 0, "ops-1", estimated_minutes=minutes)]
+    service, project = await make_service(assets=make_assets(), model_response=plan_response(tasks))
+    assessment = await submit(service)
+
+    with pytest.raises(PlanValidationError) as refused:
+        await service.generate_plan(project.id, assessment.id)
+
+    assert refused.value.reason == "invalid_task_payload"
+
+
+async def test_stage_order_rule_can_be_disabled_by_planner_config() -> None:
+    """Minor: ``enforce_stage_order`` is read from PlannerConfig, not ignored."""
+    tasks = [
+        task_payload("later", 1, "note-1", ("root",)),
+        task_payload("root", 0, "ops-1"),
+    ]
+
+    # Default config enforces the ordering, so the descending plan is rejected.
+    enforcing, project = await make_service(
+        assets=make_assets(), model_response=plan_response(tasks)
+    )
+    assessment = await enforcing.submit_assessment(project.id, valid_assessment_payload())
+    with pytest.raises(PlanValidationError) as refused:
+        await enforcing.generate_plan(project.id, assessment.id)
+    assert refused.value.reason == "stage_order"
+
+    # With the rule switched off the same plan validates and activates.
+    relaxed, project = await make_service(
+        assets=make_assets(),
+        model_response=plan_response(tasks),
+        planner_config=PlannerConfig(enforce_stage_order=False),
+    )
+    assessment = await relaxed.submit_assessment(project.id, valid_assessment_payload())
+    plan = await relaxed.generate_plan(project.id, assessment.id)
+    assert plan.status == "active"
 
 
 async def test_a_citation_of_another_projects_asset_is_rejected() -> None:
@@ -483,7 +661,9 @@ async def test_a_material_gap_is_logged_with_a_stable_reason(
 
     assert "plan_not_activated" in caplog.text
     assert "reason=insufficient_cited_evidence" in caplog.text
-    assert "task_ids=baseline" in caplog.text
+    # The logged task id is the server-namespaced one, not the model's raw ``baseline`` token.
+    assert f"task_ids={plan.tasks[-1].id}" in caplog.text
+    assert plan.tasks[-1].id.rsplit("-", 1)[-1] == "baseline"
     assert f"plan_id={plan.id}" in caplog.text
     # A new session recovers the gap from learner memory, not from the log.
     gap_notes = [note for note in service.context.remembered if "资料不足" in note[2]]
@@ -497,12 +677,15 @@ async def test_a_self_assessment_task_without_evidence_is_not_required_to_cite()
     """FR-PLN-005 exempts pure self-assessment tasks from the citation rule."""
     tasks = [
         task_payload("orientation", 0, "ops-1"),
-        task_payload("checkin", 1, "note-1", task_type="self_assessment", citations=[]),
+        task_payload(
+            "checkin", 1, "note-1", ("orientation",), task_type="self_assessment", citations=[]
+        ),
     ]
     _, project, plan = await run_plan(tasks)
 
     assert plan.status == "active"
-    assert [task.id for task in plan.tasks if task.task_type == "self_assessment"] == ["checkin"]
+    self_assessment = [task for task in plan.tasks if task.task_type == "self_assessment"]
+    assert [task.id.rsplit("-", 1)[-1] for task in self_assessment] == ["checkin"]
     assert project.id == "project-1"
 
 
@@ -524,18 +707,44 @@ async def test_a_generated_task_keeps_the_plan_and_project_it_belongs_to() -> No
     assert isinstance(plan.tasks[0], LearningTask)
 
 
-async def test_a_task_id_wider_than_the_identifier_column_is_rejected() -> None:
-    """``learning_task.id`` is a VARCHAR(64): a long model id must fail here, not at the store."""
-    long_id = "task-" + "x" * 60
-    tasks = [task_payload("a", 0, "ops-1"), task_payload(long_id, 1, "note-1", ("a",))]
-    service, project = await make_service(assets=make_assets(), model_response=plan_response(tasks))
-    assessment = await submit(service)
+async def test_long_model_ids_are_capped_into_the_identifier_column() -> None:
+    """C1: over-long model ids are folded into VARCHAR(64), kept distinct and plan-scoped."""
+    long_a = "task-" + "x" * 70
+    long_b = "task-" + "x" * 70 + "tail"  # same head, differs only past the truncation point
+    tasks = [task_payload(long_a, 0, "ops-1"), task_payload(long_b, 0, "note-1")]
+    _, _, plan = await run_plan(tasks)
+
+    stored = [task.id for task in plan.tasks]
+    assert all(len(task_id) <= 64 for task_id in stored)
+    assert len(set(stored)) == 2
+
+
+def test_a_stored_id_wider_than_the_column_is_refused_by_the_validator() -> None:
+    """The width guard still backstops a plan not built through the generator's mapper (Task 11,
+    a store that hands a row back unchanged)."""
+    from labrelay.domain.models import LearningPlan
+    from labrelay.planning.validator import validate_plan_sync
+
+    task = LearningTask.model_validate(
+        {
+            **task_payload("t" * 65, 0, "ops-1"),
+            "project_id": "project-1",
+            "plan_id": "plan-1",
+        }
+    )
+    plan = LearningPlan(
+        id="plan-1",
+        project_id="project-1",
+        version=1,
+        status="draft",
+        assessment_id="assessment-1",
+        tasks=[task],
+    )
 
     with pytest.raises(PlanValidationError) as refused:
-        await service.generate_plan(project.id, assessment.id)
+        validate_plan_sync(make_assets(), PlannerConfig(), plan)
 
     assert refused.value.reason == "task_id_too_long"
-    assert service.repository.plans == {}
 
 
 async def test_an_empty_plan_is_rejected_rather_than_activated() -> None:
@@ -563,6 +772,7 @@ def test_the_stage_table_and_its_budget_match_the_shipped_config() -> None:
         # The config lists what a stage is about; the planner requires at least that much.
         assert set(kinds) <= set(stage_required_kinds(stage))
     assert STAGE_EVIDENCE_LIMIT == retrieval["retrieval"]["fusion"]["output_limit"]
+    assert PlannerConfig().enforce_stage_order is constraints["enforce_stage_order"]
     assert (
         PlannerConfig().environment_before_experiments
         is constraints["environment_before_experiments"]

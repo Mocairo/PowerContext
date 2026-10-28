@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 AssetKind = Literal["paper", "code", "config", "experiment", "note", "operations", "other"]
 TaskStatus = Literal[
@@ -19,6 +19,11 @@ ALLOWED_TASK_TRANSITIONS: dict[str, set[str]] = {
     "done": set(),
     "skipped": set(),
 }
+
+#: A task's estimate is a plain-int guard against malformed model output poisoning the UI: one
+#: minute is the smallest useful estimate, ``MAX`` bounds it at two working days.
+MIN_ESTIMATED_MINUTES = 1
+MAX_ESTIMATED_MINUTES = 2880
 
 
 class Citation(BaseModel):
@@ -71,7 +76,7 @@ class LearningTask(BaseModel):
     title: str
     objective: str
     prerequisite_task_ids: list[str] = []
-    estimated_minutes: int = 30
+    estimated_minutes: int = Field(default=30, ge=MIN_ESTIMATED_MINUTES, le=MAX_ESTIMATED_MINUTES)
     citations: list[Citation] = []
     steps: list[str] = []
     pitfalls: list[str] = []

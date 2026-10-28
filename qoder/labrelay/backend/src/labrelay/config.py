@@ -23,6 +23,7 @@ class RetrievalConfig(BaseModel):
 
 
 class PlannerConfig(BaseModel):
+    enforce_stage_order: bool = True
     environment_before_experiments: bool = True
     every_task_requires_citation: bool = True
 
@@ -86,6 +87,7 @@ def load_app_config(project_root: Path) -> LabRelayConfig:
         server=ServerConfig(**server),
         retrieval=RetrievalConfig(fusion=RetrievalConfig.Fusion(**retrieval_cfg)),
         planner=PlannerConfig(
+            enforce_stage_order=planner_cfg.get("enforce_stage_order", True),
             environment_before_experiments=planner_cfg.get("environment_before_experiments", True),
             every_task_requires_citation=planner_cfg.get("every_task_requires_citation", True),
         ),
