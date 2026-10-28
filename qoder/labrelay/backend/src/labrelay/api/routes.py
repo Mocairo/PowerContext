@@ -40,6 +40,7 @@ from labrelay.api.schemas import (
     CreateProjectRequest,
     GeneratePlanRequest,
     ImportRequest,
+    QuestionRequest,
     ReplanRequest,
     SearchRequest,
     TaskUpdateRequest,
@@ -174,6 +175,19 @@ def build_router() -> APIRouter:
             project.id, payload.query, list(payload.asset_kinds), payload.limit
         )
         return {"hits": [hit.model_dump() for hit in hits]}
+
+    @router.post("/projects/{project_id}/questions")
+    async def answer_question(
+        project_id: str, payload: QuestionRequest, service: ServiceDep
+    ) -> dict[str, Any]:
+        from labrelay.application.qa import answer_project_question
+
+        project = await ensure_project(service, project_id)
+        response = await answer_project_question(service, project.id, payload.question)
+        return {
+            "answer": response.answer,
+            "citations": [citation.model_dump(mode="json") for citation in response.citations],
+        }
 
     @router.post("/projects/{project_id}/assessments", status_code=201)
     async def submit_assessment(

@@ -127,3 +127,9 @@ class ReplanRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class QuestionRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    question: str = Field(min_length=1, max_length=4000)
