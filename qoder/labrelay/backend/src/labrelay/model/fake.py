@@ -4,14 +4,39 @@ The plan is derived from the ``stages`` list the planner (Task 10) puts into the
 payload — each stage carries its own ``required_evidence`` kinds, so this fake reads
 the requirement from the request instead of hard-coding a stage table or a canned
 ``expected_plan`` answer.
+
+Task ids are namespaced by the assessment they were generated for: two plan versions of
+one project must never write onto the same ``learning_task.id`` primary key, and a
+prerequisite chain has to point at the tasks of its own version.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 #: Texts hinting at hands-on work get a stronger vector than pure reading.
 ACTIVE_TERMS = ("baseline", "训练", "实验")
+
+#: ``learning_task.id`` is a VARCHAR(64); leaving room for the ``-stage-<n>`` suffix.
+MAX_NAMESPACE_CHARS = 48
+
+
+def _task_namespace(user_payload: dict[str, object]) -> str:
+    """Stable discriminator for the ids of one plan, from the payload itself."""
+    assessment = user_payload.get("assessment")
+    raw = assessment.get("id") if isinstance(assessment, dict) else None
+    discriminator = raw.strip() if isinstance(raw, str) else ""
+    if not discriminator:
+        # Payloads without an assessment id (fixtures, older callers) still must not
+        # share an id space, so fall back to a digest of the request.
+        canonical = json.dumps(user_payload, sort_keys=True, ensure_ascii=False, default=str)
+        discriminator = f"payload-{hashlib.sha256(canonical.encode()).hexdigest()[:16]}"
+    if len(discriminator) > MAX_NAMESPACE_CHARS:
+        digest = hashlib.sha256(discriminator.encode()).hexdigest()[:15]
+        discriminator = f"{discriminator[: MAX_NAMESPACE_CHARS - 16]}-{digest}"
+    return discriminator
 
 
 class DeterministicModelGateway:
@@ -19,11 +44,12 @@ class DeterministicModelGateway:
         self.dimension = dimension
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        # Every component of one text repeats a single value, so the vectors are a
+        # deterministic *degenerate* stand-in: they keep Task 7's plumbing runnable but
+        # say nothing about retrieval quality. Never read results produced with them as
+        # a search benchmark.
         return [
-            [
-                1.0 if any(term in text.lower() for term in ACTIVE_TERMS) else 0.5
-            ]
-            * self.dimension
+            [1.0 if any(term in text.lower() for term in ACTIVE_TERMS) else 0.5] * self.dimension
             for text in texts
         ]
 
@@ -34,10 +60,11 @@ class DeterministicModelGateway:
         if not isinstance(stages, list):
             raise ValueError("model payload must contain a 'stages' list")
 
+        namespace = _task_namespace(user_payload)
         tasks: list[dict[str, Any]] = []
         previous_id: str | None = None
         for stage in stages:
-            stage_id = f"stage-{stage['id']}"
+            stage_id = f"{namespace}-stage-{stage['id']}"
             evidence = stage["evidence"]
             required = set(stage["required_evidence"])
             present = {item["citation"]["kind"] for item in evidence}
