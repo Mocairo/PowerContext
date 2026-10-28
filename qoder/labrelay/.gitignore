@@ -1,0 +1,43 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node and Vite
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# Local runtime data
+/data/*
+!/data/raw/
+!/data/index/
+!/data/logs/
+/data/raw/*
+!/data/raw/.gitkeep
+/data/index/*
+!/data/index/.gitkeep
+/data/logs/*
+!/data/logs/.gitkeep
+
+# Generated verification artifacts
+/docs/verification/runtime-outputs/
+/site/dist/
+/site/public/demo-data/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

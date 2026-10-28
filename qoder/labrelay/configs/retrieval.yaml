@@ -1,0 +1,48 @@
+retrieval:
+  full_text:
+    enabled: true
+    candidate_limit: 50
+    min_score: 0.0
+  vector:
+    enabled: true
+    candidate_limit: 50
+    min_score: 0.0
+    distance_metric: cosine
+  fusion:
+    full_text_weight: 0.45
+    vector_weight: 0.55
+    output_limit: 12
+  grouping:
+    max_chunks_per_asset: 3
+    preserve_asset_diversity: true
+  filters:
+    default_asset_kinds:
+      - paper
+      - code
+      - experiment
+      - note
+      - operations
+    required_scope: project
+  citation:
+    validate_before_return: true
+    include_excerpt: true
+    max_excerpt_characters: 700
+
+query_templates:
+  baseline_reproduction:
+    asset_types:
+      - code
+      - config
+      - experiment
+      - note
+    max_results: 12
+  operations:
+    asset_types:
+      - operations
+      - note
+    max_results: 8
+  paper_background:
+    asset_types:
+      - paper
+      - note
+    max_results: 10

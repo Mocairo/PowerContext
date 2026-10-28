@@ -1,0 +1,29 @@
+project:
+  name: LabRelay
+  version: 0.1.0
+  display_name: 科研接力
+
+server:
+  bind_address: 127.0.0.1
+  port: 8010
+  request_id_header: X-LabRelay-Request-Id
+  max_request_bytes: 10485760
+
+paths:
+  data_root: ./data
+  raw_asset_root: ./data/raw
+  index_state_root: ./data/index
+  log_root: ./data/logs
+
+defaults:
+  language: zh-CN
+  timezone: Asia/Shanghai
+  learner_profile:
+    hours_per_week: 10
+    target: reproduce_baseline
+
+feature_boundaries:
+  multi_user: false
+  remote_code_execution: false
+  automatic_resource_management: false
+  public_site_backend: false

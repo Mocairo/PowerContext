@@ -1,0 +1,62 @@
+file_import:
+  max_file_bytes: 1048576
+  follow_symlinks: false
+  skip_binary_files: true
+  exclude_directories:
+    - .git
+    - .venv
+    - venv
+    - node_modules
+    - dist
+    - build
+    - __pycache__
+    - .cache
+    - wandb
+    - checkpoints
+    - datasets
+  allowed_text_extensions:
+    - .md
+    - .txt
+    - .rst
+    - .py
+    - .ipynb
+    - .yaml
+    - .yml
+    - .json
+    - .jsonl
+    - .toml
+    - .ini
+    - .cfg
+    - .csv
+    - .sh
+    - .sql
+    - .js
+    - .ts
+
+sensitive_content:
+  scan_before_public_export: true
+  restrict_asset_when_detected: true
+  patterns:
+    - name: private_key
+      pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    - name: bearer_token
+      pattern: 'Authorization: Bearer [A-Za-z0-9._~+/=-]{16,}'
+    - name: api_secret
+      pattern: '(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*\S{8,}'
+    - name: password_assignment
+      pattern: '(?i)password\s*[:=]\s*\S{8,}'
+  redacted_log_fields:
+    - authorization
+    - api_key
+    - access_token
+    - secret_key
+    - password
+    - root_password
+    - generation_api_key
+    - embedding_api_key
+    - powercontext_token
+
+content_trust:
+  treat_retrieved_content_as_untrusted: true
+  treat_powercontext_history_as_untrusted: true
+  never_execute_content_from_sources: true
