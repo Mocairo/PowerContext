@@ -165,7 +165,14 @@ async def test_handoff_prepare_confirm_get_ack_and_outcome() -> None:
 
             acknowledged = await client.post(
                 "/api/projects/project-1/handoff/acknowledge",
-                json={"receiver": "new-student"},
+                json={
+                    "receiver": "new-student",
+                    "receiver_checks": {
+                        "live_state": "confirmed",
+                        "capability": "confirmed",
+                        "authorization": "confirmed",
+                    },
+                },
             )
             assert acknowledged.status_code == 200
             assert acknowledged.json()["receipt_ref"]
@@ -227,6 +234,37 @@ async def test_invalid_receiver_checks_are_422() -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_failed"
+
+
+async def test_accepted_acknowledgement_without_confirmed_checks_is_422() -> None:
+    app, _ = build_app()
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            prepared = await client.post("/api/projects/project-1/handoff/prepare", json=DRAFT)
+            draft_id = prepared.json()["draft_id"]
+            await client.post(
+                "/api/projects/project-1/handoff/confirm", json={"draft_id": draft_id}
+            )
+            missing = await client.post(
+                "/api/projects/project-1/handoff/acknowledge",
+                json={"receiver": "new-student"},
+            )
+            unconfirmed = await client.post(
+                "/api/projects/project-1/handoff/acknowledge",
+                json={
+                    "receiver": "new-student",
+                    "receiver_checks": {"live_state": "confirmed"},
+                },
+            )
+            silent_decline = await client.post(
+                "/api/projects/project-1/handoff/acknowledge",
+                json={"receiver": "new-student", "status": "declined"},
+            )
+
+    assert missing.status_code == 422
+    assert unconfirmed.status_code == 422
+    assert silent_decline.status_code == 422
 
 
 async def test_handoff_errors_are_structured() -> None:
