@@ -7,7 +7,15 @@ SCHEMA = Path(__file__).resolve().parents[2] / "src/labrelay/seekdb/schema.sql"
 
 def test_seekdb_schema_contains_core_tables() -> None:
     sql = SCHEMA.read_text(encoding="utf-8")
-    for table in ("projects", "assets", "assessments", "plans", "tasks", "task_events"):
+    for table in (
+        "projects",
+        "assets",
+        "assessments",
+        "handoff_drafts",
+        "plans",
+        "tasks",
+        "task_events",
+    ):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
 
 
@@ -28,6 +36,13 @@ def test_task_order_is_an_explicit_column() -> None:
 
     assert "position INT NOT NULL DEFAULT 0" in block
     assert "INDEX idx_tasks_plan_position (plan_id, position)" in block
+
+
+def test_projects_store_durable_handoff_references() -> None:
+    block = _table_block(SCHEMA.read_text(encoding="utf-8"), "projects")
+
+    assert "handoff_ref VARCHAR(255) NULL" in block
+    assert "handoff_receipt_ref VARCHAR(512) NULL" in block
 
 
 def _table_block(sql: str, table: str) -> str:

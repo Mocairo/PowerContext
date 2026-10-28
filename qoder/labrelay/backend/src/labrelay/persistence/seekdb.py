@@ -98,6 +98,8 @@ _PROJECTS = _Table(
         "project_scope_id",
         "learner_scope_id",
         "active_plan_id",
+        "handoff_ref",
+        "handoff_receipt_ref",
     ),
     (
         "title",
@@ -106,6 +108,8 @@ _PROJECTS = _Table(
         "project_scope_id",
         "learner_scope_id",
         "active_plan_id",
+        "handoff_ref",
+        "handoff_receipt_ref",
     ),
 )
 _ASSETS = _Table(
@@ -115,6 +119,11 @@ _ASSETS = _Table(
 )
 _ASSESSMENTS = _Table(
     "assessments",
+    ("id", "project_id", "payload_json"),
+    ("project_id", "payload_json"),
+)
+_HANDOFF_DRAFTS = _Table(
+    "handoff_drafts",
     ("id", "project_id", "payload_json"),
     ("project_id", "payload_json"),
 )
@@ -372,6 +381,32 @@ class SeekdbRepository:
 
     def _get_assessment_sync(self, assessment_id: str) -> dict[str, object] | None:
         row = self._fetch_one(_ASSESSMENTS.select(), (assessment_id,))
+        if row is None:
+            return None
+        parsed = json.loads(row["payload_json"])
+        return parsed if isinstance(parsed, dict) else None
+
+    async def save_handoff_draft(
+        self, draft_id: str, project_id: str, payload: dict[str, object]
+    ) -> None:
+        await anyio.to_thread.run_sync(self._save_handoff_draft_sync, draft_id, project_id, payload)
+
+    def _save_handoff_draft_sync(
+        self, draft_id: str, project_id: str, payload: dict[str, object]
+    ) -> None:
+        stored = {**payload, "id": draft_id, "project_id": project_id}
+        values = {
+            "id": draft_id,
+            "project_id": project_id,
+            "payload_json": json.dumps(stored, ensure_ascii=False, default=str),
+        }
+        self._transaction(lambda cursor: self._save_row(cursor, _HANDOFF_DRAFTS, values))
+
+    async def get_handoff_draft(self, draft_id: str) -> dict[str, object] | None:
+        return await anyio.to_thread.run_sync(self._get_handoff_draft_sync, draft_id)
+
+    def _get_handoff_draft_sync(self, draft_id: str) -> dict[str, object] | None:
+        row = self._fetch_one(_HANDOFF_DRAFTS.select(), (draft_id,))
         if row is None:
             return None
         parsed = json.loads(row["payload_json"])

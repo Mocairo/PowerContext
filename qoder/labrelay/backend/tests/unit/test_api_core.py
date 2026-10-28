@@ -623,7 +623,7 @@ async def test_health_ready_still_answers_and_now_carries_the_request_id() -> No
     assert response.headers[REQUEST_ID_HEADER].startswith("request-")
 
 
-def test_the_openapi_document_lists_exactly_the_task_6_surface() -> None:
+def test_the_openapi_document_lists_the_project_and_handoff_surface() -> None:
     """Task 14 generates its client from this document, so the annotations must survive it."""
     paths = create_app_with_service(make_service()).openapi()["paths"]
 
@@ -632,4 +632,9 @@ def test_the_openapi_document_lists_exactly_the_task_6_surface() -> None:
         "/api/projects/{project_id}/imports",
         "/api/projects/{project_id}/assets",
         "/api/projects/{project_id}/search",
+        "/api/projects/{project_id}/handoff/prepare",
+        "/api/projects/{project_id}/handoff/confirm",
+        "/api/projects/{project_id}/handoff",
+        "/api/projects/{project_id}/handoff/acknowledge",
+        "/api/projects/{project_id}/handoff/outcome",
     }

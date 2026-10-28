@@ -26,7 +26,15 @@ from labrelay.persistence.seekdb import (
     SeekdbRepository,
 )
 
-TABLES = ("projects", "assets", "assessments", "plans", "tasks", "task_events")
+TABLES = (
+    "projects",
+    "assets",
+    "assessments",
+    "handoff_drafts",
+    "plans",
+    "tasks",
+    "task_events",
+)
 
 #: The non-primary uniqueness the shipped schema declares, with the key names MySQL reports.
 UNIQUE_KEYS = {
@@ -327,7 +335,7 @@ def test_initialize_creates_the_database_and_every_table(database) -> None:
 
     creates = [statement for statement in database.statements if statement.startswith("CREATE")]
     assert creates[0].startswith("CREATE DATABASE IF NOT EXISTS `labrelay`")
-    assert len(creates) == 7
+    assert len(creates) == 1 + len(TABLES)
     for table in TABLES:
         assert any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for statement in creates)
     assert database.commits == 2
@@ -600,6 +608,20 @@ def test_get_active_plan_follows_the_project_pointer(database) -> None:
 # --------------------------------------------------- in-memory interchangeability
 
 
+def test_handoff_draft_survives_a_reconnect_and_updates_by_primary_key(database) -> None:
+    repository = _repository()
+
+    _run(repository.save_handoff_draft("draft-1", "project-1", {"objective": "baseline"}))
+    first = _run(repository.get_handoff_draft("draft-1"))
+    _run(repository.save_handoff_draft("draft-1", "project-1", {"objective": "ablation"}))
+    reconnect = _repository()
+    second = _run(reconnect.get_handoff_draft("draft-1"))
+
+    assert first == {"id": "draft-1", "project_id": "project-1", "objective": "baseline"}
+    assert second == {"id": "draft-1", "project_id": "project-1", "objective": "ablation"}
+    assert len(database.rows("handoff_drafts")) == 1
+
+
 def test_seekdb_repository_reads_like_the_in_memory_repository(database) -> None:
     """The same scenario must produce the same reads through either side of the port."""
     tasks = [_task("task-late-stage", stage=3), _task("task-early-stage", stage=1)]
@@ -612,6 +634,11 @@ def test_seekdb_repository_reads_like_the_in_memory_repository(database) -> None
         await repository.save_asset(_asset("asset-b"))
         await repository.save_asset(_asset("asset-a"))
         await repository.save_assessment("assessment-1", "project-1", {"python": "advanced"})
+        await repository.save_handoff_draft(
+            "draft-1",
+            "project-1",
+            {"objective": "baseline", "citations": ["asset-a"]},
+        )
         await repository.save_plan(plan)
         await repository.save_project(_project(active_plan_id="plan-1"))
         await repository.save_task(tasks[0].model_copy(update={"status": "todo"}))
@@ -624,6 +651,7 @@ def test_seekdb_repository_reads_like_the_in_memory_repository(database) -> None
             "task": await repository.get_task("task-late-stage"),
             "events": [event.id for event in await repository.list_events("project-1")],
             "assessment": await repository.get_assessment("assessment-1"),
+            "handoff_draft": await repository.get_handoff_draft("draft-1"),
             "next_version": await repository.get_next_plan_version("project-1"),
             "missing": await repository.get_project("project-unknown"),
         }

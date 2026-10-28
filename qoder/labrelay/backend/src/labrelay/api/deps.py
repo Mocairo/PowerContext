@@ -17,6 +17,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from labrelay.api.errors import PROJECT_NOT_FOUND, SERVICE_NOT_CONFIGURED, ApiError
+from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.domain.models import Project
 
@@ -29,6 +30,18 @@ def get_service(request: Request) -> LabRelayService:
             SERVICE_NOT_CONFIGURED,
             "No LabRelay service is wired into this application yet.",
             {"dependency": "labrelay_service"},
+        )
+    return service
+
+
+def get_handoff_service(request: Request) -> HandoffService:
+    service = getattr(request.app.state, "handoff_service", None)
+    if service is None:
+        raise ApiError(
+            503,
+            SERVICE_NOT_CONFIGURED,
+            "No Handoff service is wired into this application yet.",
+            {"dependency": "handoff_service"},
         )
     return service
 

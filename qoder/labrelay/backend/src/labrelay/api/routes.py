@@ -19,21 +19,33 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 
-from labrelay.api.deps import ensure_project, get_service
+from labrelay.api.deps import ensure_project, get_handoff_service, get_service
 from labrelay.api.errors import (
     DEPENDENCY_UNAVAILABLE,
+    HANDOFF_NOT_FOUND,
+    HANDOFF_NOT_READY,
     IMPORT_PATH_NOT_DIRECTORY,
     ApiError,
     request_id_of,
 )
 from labrelay.api.schemas import CreateProjectRequest, ImportRequest, SearchRequest
+from labrelay.application.handoff import (
+    HandoffAcknowledgementRequest,
+    HandoffConfirmRequest,
+    HandoffDraft,
+    HandoffNotReadyError,
+    HandoffService,
+    TaskOutcomeRequest,
+)
 from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
+from labrelay.context.powercontext import PowerContextUnavailableError
 
 logger = logging.getLogger("labrelay.api.routes")
 
 # ``Annotated`` rather than ``= Depends(...)``: the same dependency, without the call in a default
 # argument that bugbear (and FastAPI's own guidance) discourage.
 ServiceDep = Annotated[LabRelayService, Depends(get_service)]
+HandoffDep = Annotated[HandoffService, Depends(get_handoff_service)]
 
 IMPORT_PATH_MESSAGE = "The import path must be an existing directory."
 
@@ -41,6 +53,18 @@ IMPORT_PATH_MESSAGE = "The import path must be an existing directory."
 def _import_refused(path: Path) -> ApiError:
     """The one 422 an unusable import source can produce, whatever noticed it."""
     return ApiError(422, IMPORT_PATH_NOT_DIRECTORY, IMPORT_PATH_MESSAGE, {"path": str(path)})
+
+
+def _powercontext_unavailable(project_id: str | None = None) -> ApiError:
+    details: dict[str, Any] = {"dependency": "powercontext"}
+    if project_id:
+        details["project_id"] = project_id
+    return ApiError(
+        503,
+        DEPENDENCY_UNAVAILABLE,
+        "The PowerContext service is unavailable.",
+        details,
+    )
 
 
 def build_router() -> APIRouter:
@@ -74,6 +98,13 @@ def build_router() -> APIRouter:
                 "The memory service did not hand back usable project scopes.",
                 {"dependency": "context_gateway"},
             ) from None
+        except PowerContextUnavailableError:
+            logger.warning(
+                "dependency failure operation=create_project request_id=%s "
+                "dependency=powercontext dependency_status=unavailable",
+                request_id_of(request),
+            )
+            raise _powercontext_unavailable() from None
         return project.model_dump()
 
     @router.post("/projects/{project_id}/imports")
@@ -118,5 +149,98 @@ def build_router() -> APIRouter:
             project.id, payload.query, list(payload.asset_kinds), payload.limit
         )
         return {"hits": [hit.model_dump() for hit in hits]}
+
+    @router.post("/projects/{project_id}/handoff/prepare")
+    async def prepare_handoff(
+        project_id: str, payload: HandoffDraft, handoff: HandoffDep, service: ServiceDep
+    ) -> dict[str, Any]:
+        project = await ensure_project(service, project_id)
+        preview = await handoff.prepare(project.id, payload)
+        return preview.model_dump(mode="json")
+
+    @router.post("/projects/{project_id}/handoff/confirm")
+    async def confirm_handoff(
+        project_id: str,
+        handoff: HandoffDep,
+        service: ServiceDep,
+        payload: HandoffConfirmRequest | None = None,
+    ) -> dict[str, Any]:
+        project = await ensure_project(service, project_id)
+        try:
+            view = await handoff.confirm(
+                project.id,
+                draft_id=payload.draft_id if payload else None,
+                draft=payload.draft if payload else None,
+            )
+        except HandoffNotReadyError as exc:
+            raise ApiError(
+                409,
+                HANDOFF_NOT_READY,
+                str(exc),
+                {"project_id": project.id},
+            ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
+        return view.model_dump(mode="json")
+
+    @router.get("/projects/{project_id}/handoff")
+    async def get_handoff(
+        project_id: str, handoff: HandoffDep, service: ServiceDep
+    ) -> dict[str, Any]:
+        project = await ensure_project(service, project_id)
+        try:
+            view = await handoff.get(project.id)
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
+        if view is None:
+            raise ApiError(
+                404,
+                HANDOFF_NOT_FOUND,
+                f"No committed Handoff exists for project {project.id}.",
+                {"project_id": project.id},
+            )
+        return view.model_dump(mode="json")
+
+    @router.post("/projects/{project_id}/handoff/acknowledge")
+    async def acknowledge_handoff(
+        project_id: str,
+        payload: HandoffAcknowledgementRequest,
+        handoff: HandoffDep,
+        service: ServiceDep,
+    ):
+        project = await ensure_project(service, project_id)
+        try:
+            result = await handoff.acknowledge(project.id, payload)
+        except HandoffNotReadyError as exc:
+            raise ApiError(
+                409,
+                HANDOFF_NOT_READY,
+                str(exc),
+                {"project_id": project.id},
+            ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
+        return result
+
+    @router.post("/projects/{project_id}/handoff/outcome")
+    async def record_outcome(
+        project_id: str,
+        payload: TaskOutcomeRequest,
+        handoff: HandoffDep,
+        service: ServiceDep,
+    ):
+        project = await ensure_project(service, project_id)
+        try:
+            result = await handoff.record_outcome(project.id, payload)
+        except HandoffNotReadyError as exc:
+            raise ApiError(
+                409,
+                HANDOFF_NOT_READY,
+                str(exc),
+                {"project_id": project.id},
+            ) from None
+        except PowerContextUnavailableError:
+            raise _powercontext_unavailable(project.id) from None
+        return result
 
     return router

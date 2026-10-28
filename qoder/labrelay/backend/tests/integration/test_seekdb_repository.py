@@ -73,6 +73,18 @@ async def test_repository_round_trip() -> None:
     assert stored_assessment["project_id"] == project_id
     assert stored_assessment["nested"] == {"torch": True}
 
+    draft_id = f"handoff-draft-{suffix}"
+    await repository.save_handoff_draft(
+        draft_id,
+        project_id,
+        {"draft": {"objective": "baseline", "state": []}},
+    )
+    stored_draft = await repository.get_handoff_draft(draft_id)
+    assert stored_draft is not None
+    assert stored_draft["id"] == draft_id
+    assert stored_draft["project_id"] == project_id
+    assert stored_draft["draft"]["objective"] == "baseline"
+
     citation = Citation(
         asset_id=asset.id,
         kind="code",
@@ -107,8 +119,15 @@ async def test_repository_round_trip() -> None:
     assert await repository.get_plan(plan.id) == plan
     assert await repository.get_next_plan_version(project_id) == 2
 
-    active_project = project.model_copy(update={"active_plan_id": plan.id})
+    active_project = project.model_copy(
+        update={
+            "active_plan_id": plan.id,
+            "handoff_ref": '{"family":"handoff","artifact_id":"h1","revision":1}',
+            "handoff_receipt_ref": '{"name":"handoff-receipt","source_id":"ack-1"}',
+        }
+    )
     await repository.save_project(active_project)
+    assert await repository.get_project(project_id) == active_project
     assert await repository.get_active_plan(project_id) == plan
 
     updated_task = task.model_copy(update={"status": "todo"})
