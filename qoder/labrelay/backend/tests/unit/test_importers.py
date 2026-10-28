@@ -1,0 +1,307 @@
+from pathlib import Path
+
+import pytest
+
+from labrelay.domain.models import Asset, Chunk
+from labrelay.importers.assets import (
+    build_asset,
+    chunk_asset,
+    classify_asset,
+    import_directory,
+    iter_importable_files,
+)
+from labrelay.importers.pdf import extract_pdf_chunks
+
+
+def test_classify_recognizes_code_config_and_notes(tmp_path: Path) -> None:
+    code = tmp_path / "train.py"
+    code.write_text("def train():\n    return 1\n", encoding="utf-8")
+    config = tmp_path / "baseline.yaml"
+    config.write_text("learning_rate: 0.001\n", encoding="utf-8")
+    note = tmp_path / "handoff.md"
+    note.write_text("# next\nrun lr sweep\n", encoding="utf-8")
+
+    assert classify_asset(code)[1] == "code"
+    assert classify_asset(config)[1] == "config"
+    assert classify_asset(note)[1] == "note"
+
+
+def test_iter_importable_files_skips_excluded_and_binary(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    keep = tmp_path / "README.md"
+    keep.write_text("# project", encoding="utf-8")
+    binary = tmp_path / "weights.bin"
+    binary.write_bytes(b"\x00\x01\x02")
+
+    files = list(iter_importable_files(tmp_path))
+    assert files == [keep]
+
+
+def test_asset_with_secret_is_restricted(tmp_path: Path) -> None:
+    secret = tmp_path / "config.yaml"
+    secret.write_text("api_key: super-secret-value\n", encoding="utf-8")
+    asset = build_asset("project-1", secret)
+    assert asset.status == "restricted"
+
+
+# --- discovery beyond the brief's three cases --------------------------------
+
+
+def test_iter_importable_files_skips_excluded_dirs_oversized_and_unsupported(
+    tmp_path: Path,
+) -> None:
+    leak = tmp_path / ".venv" / "site-packages" / "leak.py"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("api_key = 'leaked-value'\n", encoding="utf-8")
+
+    huge = tmp_path / "huge.md"
+    huge.write_text("# log\n" + ("x" * 40 + "\n") * 30_000, encoding="utf-8")
+
+    (tmp_path / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    wanted = tmp_path / "notes.md"
+    wanted.write_text("# ok\n", encoding="utf-8")
+
+    assert list(iter_importable_files(tmp_path)) == [wanted]
+
+
+def test_build_asset_is_deterministic_and_carries_checksum(tmp_path: Path) -> None:
+    note = tmp_path / "handoff.md"
+    note.write_text("# next\nrun lr sweep\n", encoding="utf-8")
+
+    first = build_asset("project-1", note)
+    second = build_asset("project-1", note)
+
+    assert first == second
+    assert first.id.startswith("asset-")
+    assert first.project_id == "project-1"
+    assert first.title == "handoff.md"
+    assert first.kind == "note"
+    assert first.status == "active"
+    assert len(first.checksum) == 64
+
+
+# --- chunking keeps citation-bearing locators --------------------------------
+
+
+def test_chunk_asset_uses_markdown_sections_for_notes(tmp_path: Path) -> None:
+    note = tmp_path / "handoff.md"
+    note.write_text("# setup\ninstall uv\n\n# train\nrun train.py\n", encoding="utf-8")
+
+    chunks = chunk_asset("asset-1", note)
+
+    assert [chunk.content for chunk in chunks] == ["install uv", "run train.py"]
+    assert [chunk.locator for chunk in chunks] == [{"section": "setup"}, {"section": "train"}]
+    assert [chunk.ordinal for chunk in chunks] == [0, 1]
+    assert [chunk.asset_id for chunk in chunks] == ["asset-1", "asset-1"]
+    assert all(chunk.token_count > 0 for chunk in chunks)
+
+
+def test_chunk_asset_uses_line_ranges_for_code(tmp_path: Path) -> None:
+    code = tmp_path / "train.py"
+    code.write_text("\n".join(f"line_{number}" for number in range(1, 201)), encoding="utf-8")
+
+    chunks = chunk_asset("asset-1", code)
+
+    assert [chunk.id for chunk in chunks] == [
+        "asset-1:lines:1-80",
+        "asset-1:lines:81-160",
+        "asset-1:lines:161-200",
+    ]
+    assert [chunk.locator for chunk in chunks] == [
+        {"line_start": 1, "line_end": 80},
+        {"line_start": 81, "line_end": 160},
+        {"line_start": 161, "line_end": 200},
+    ]
+    assert [chunk.ordinal for chunk in chunks] == [0, 1, 2]
+    assert chunks[0].content.startswith("line_1\n")
+    assert chunks[-1].content.endswith("line_200")
+
+
+def test_chunk_asset_redacts_credentials_before_indexing(tmp_path: Path) -> None:
+    code = tmp_path / "train.py"
+    code.write_text(
+        "api_key=super-secret-value\n"
+        "password=another-secret-value\n"
+        "def train():\n    return 1\n",
+        encoding="utf-8",
+    )
+
+    content = "\n".join(chunk.content for chunk in chunk_asset("asset-1", code))
+
+    assert "super-secret-value" not in content
+    assert "another-secret-value" not in content
+    assert "api_key=[REDACTED]" in content
+    assert "password=[REDACTED]" in content
+
+
+# --- PDF extraction ----------------------------------------------------------
+
+
+def _pdf_bytes(page_texts: list[str | None]) -> bytes:
+    """Build a minimal text-only PDF; ``None`` stands for an image-only page."""
+    page_count = len(page_texts)
+    first_page_id = 3
+    font_id = first_page_id + 2 * page_count
+    kids = " ".join(f"{first_page_id + 2 * index} 0 R" for index in range(page_count))
+
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {page_count} >>".encode("ascii"),
+    ]
+    for index, page_text in enumerate(page_texts):
+        page_id = first_page_id + 2 * index
+        content_id = page_id + 1
+        stream = (
+            b""
+            if page_text is None
+            else f"BT /F1 12 Tf 20 100 Td ({page_text}) Tj ET".encode("ascii")
+        )
+        objects.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents {content_id} 0 R "
+                f"/Resources << /Font << /F1 {font_id} 0 R >> >> >>"
+            ).encode("ascii")
+        )
+        objects.append(
+            f"<< /Length {len(stream)} >>\nstream\n".encode("ascii") + stream + b"\nendstream"
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode("ascii") + body + b"\nendobj\n"
+
+    cross_reference = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode("ascii")
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode("ascii")
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{cross_reference}\n%%EOF\n"
+    ).encode("ascii")
+    return bytes(out)
+
+
+def _write_pdf(path: Path, page_texts: list[str | None]) -> Path:
+    path.write_bytes(_pdf_bytes(page_texts))
+    return path
+
+
+def test_extract_pdf_chunks_paginates_with_page_locators(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "paper.pdf", ["qoder results table", "ablation section"])
+
+    chunks = extract_pdf_chunks(pdf, "asset-9")
+
+    assert [chunk.locator for chunk in chunks] == [{"page": 1}, {"page": 2}]
+    assert [chunk.id for chunk in chunks] == ["asset-9:page:1", "asset-9:page:2"]
+    assert [chunk.ordinal for chunk in chunks] == [0, 1]
+    assert "qoder" in chunks[0].content
+    assert "ablation" in chunks[1].content
+
+
+def test_extract_pdf_chunks_without_text_reports_ocr_need(tmp_path: Path) -> None:
+    scanned = _write_pdf(tmp_path / "scan.pdf", [None])
+
+    with pytest.raises(ValueError, match="OCR is required"):
+        extract_pdf_chunks(scanned, "asset-9")
+
+
+def test_extract_pdf_chunks_rejects_unreadable_file(tmp_path: Path) -> None:
+    corrupt = tmp_path / "corrupt.pdf"
+    corrupt.write_bytes(b"%PDF-1.4 not really a pdf")
+
+    with pytest.raises(ValueError, match="could not be read"):
+        extract_pdf_chunks(corrupt, "asset-9")
+
+
+# --- directory import --------------------------------------------------------
+
+
+class FakeRepository:
+    def __init__(self) -> None:
+        self.assets: dict[str, Asset] = {}
+
+    async def save_asset(self, asset: Asset) -> None:
+        self.assets[asset.id] = asset
+
+
+class FakeSearchEngine:
+    def __init__(self) -> None:
+        self.chunks: dict[str, Chunk] = {}
+        self.asset_ids: list[str] = []
+        self.calls = 0
+
+    async def upsert_chunks(self, chunks: list[Chunk], assets: list[Asset]) -> None:
+        self.calls += 1
+        self.asset_ids = [asset.id for asset in assets]
+        for chunk in chunks:
+            self.chunks[chunk.id] = chunk
+
+
+def _sample_project(root: Path) -> Path:
+    (root / "handoff.md").write_text("# next\nrun lr sweep\n", encoding="utf-8")
+    (root / "train.py").write_text("def train():\n    return 1\n", encoding="utf-8")
+    (root / "config.yaml").write_text("api_key: super-secret-value\n", encoding="utf-8")
+    _write_pdf(root / "paper.pdf", ["citation evidence"])
+    return root
+
+
+async def test_import_directory_persists_assets_and_indexes_chunks(tmp_path: Path) -> None:
+    source = _sample_project(tmp_path)
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    result = await import_directory(repository, search_engine, "project-1", source)
+
+    assert result == {"assets": 4, "chunks": 4, "failed": 0}
+    assert len(repository.assets) == 4
+    assert search_engine.calls == 1
+    assert sorted(search_engine.asset_ids) == sorted(
+        asset.id for asset in repository.assets.values()
+    )
+    assert len(search_engine.chunks) == result["chunks"]
+    assert all(chunk.asset_id in repository.assets for chunk in search_engine.chunks.values())
+    assert all(
+        "super-secret-value" not in chunk.content for chunk in search_engine.chunks.values()
+    )
+
+
+async def test_import_directory_is_idempotent(tmp_path: Path) -> None:
+    source = _sample_project(tmp_path)
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    first = await import_directory(repository, search_engine, "project-1", source)
+    asset_ids = sorted(repository.assets)
+    chunk_ids = sorted(search_engine.chunks)
+    second = await import_directory(repository, search_engine, "project-1", source)
+
+    assert first == second
+    assert sorted(repository.assets) == asset_ids
+    assert sorted(search_engine.chunks) == chunk_ids
+
+
+async def test_import_directory_marks_scanned_pdf_failed_without_indexing(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _write_pdf(tmp_path / "scan.pdf", [None])
+    note = tmp_path / "README.md"
+    note.write_text("# ok\nkeep me\n", encoding="utf-8")
+    repository = FakeRepository()
+    search_engine = FakeSearchEngine()
+
+    with caplog.at_level("WARNING", logger="labrelay.importers.assets"):
+        result = await import_directory(repository, search_engine, "project-1", tmp_path)
+
+    assert result == {"assets": 1, "chunks": 1, "failed": 1}
+    failed = [asset for asset in repository.assets.values() if asset.status == "failed"]
+    assert [asset.title for asset in failed] == ["scan.pdf"]
+    assert failed[0].id not in search_engine.asset_ids
+    assert [chunk.asset_id for chunk in search_engine.chunks.values()] == [
+        build_asset("project-1", note).id
+    ]
+    assert "OCR is required" in caplog.text
