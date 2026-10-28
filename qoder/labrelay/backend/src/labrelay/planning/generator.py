@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections.abc import Sequence
 
 from pydantic import ValidationError
 
@@ -204,7 +205,7 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
         # duplicate is reported by the validator, not silently merged apart here.
         stored_id = id_map.setdefault(raw_key, _stored_task_id(namespace, raw_key))
         payload["id"] = stored_id
-        entries.append((payload, list(payload.get("prerequisite_task_ids") or [])))
+        entries.append((payload, _raw_prerequisites(payload)))
 
     tasks: list[LearningTask] = []
     for payload, raw_prerequisites in entries:
@@ -227,6 +228,27 @@ def _parse_tasks(model_response: object, *, project: Project, plan_id: str) -> l
     return tasks
 
 
+def _raw_prerequisites(payload: dict[str, object]) -> list[object]:
+    """Read ``prerequisite_task_ids`` as a sequence or refuse the payload; never iterate a scalar.
+
+    The conversion this guards used to be ``list(payload.get(...) or [])``: a number or boolean
+    reached ``list()`` and raised ``TypeError`` (answered as a redacted 500), a string would have
+    silently split into per-character prerequisites, and an explicit ``null`` was folded into "no
+    prerequisites" — a different plan than the model described. A JSON list/tuple is the only
+    shape that maps; an absent key keeps the domain default. Everything else is a task payload
+    this service cannot read, so it leaves as ``invalid_task_payload`` (422) like the rest.
+    """
+    if "prerequisite_task_ids" not in payload:
+        return []
+    value = payload["prerequisite_task_ids"]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)
+    raise PlanValidationError(
+        "the model answer carries a task whose prerequisite_task_ids is not a list",
+        reason=INVALID_TASK_PAYLOAD,
+    )
+
+
 def _raw_task_key(raw_id: object, index: int) -> str:
     """The model's own id used only as a mapping key; a missing one falls back to its position."""
     text = raw_id.strip() if isinstance(raw_id, str) else (str(raw_id).strip() if raw_id else "")
@@ -246,9 +268,7 @@ def _rewrite_prerequisite(namespace: str, raw_key: object, id_map: dict[str, str
     return _stored_task_id(namespace, key or "unknown")
 
 
-async def _activate(
-    repository: Repository, plan: LearningPlan, project: Project
-) -> LearningPlan:
+async def _activate(repository: Repository, plan: LearningPlan, project: Project) -> LearningPlan:
     """Open the plan, make its roots executable, supersede the previous active plan, repoint.
 
     The validator guarantees a prerequisite-free task is a stage 0 task, so only entry-point

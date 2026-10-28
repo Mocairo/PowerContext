@@ -395,9 +395,7 @@ async def test_generation_over_the_real_engine_reaches_citations_into_the_plan(
     assessment = await service.submit_assessment(project.id, valid_assessment_payload())
     plan = await service.generate_plan(project.id, assessment.id)
 
-    active_asset_ids = {
-        record.id for record in imported_assets if record.status == "active"
-    }
+    active_asset_ids = {record.id for record in imported_assets if record.status == "active"}
     cited_ids = {citation.asset_id for task in plan.tasks for citation in task.citations}
     # Every citation the plan carries resolves to a real, active asset the importer persisted.
     assert cited_ids
@@ -539,6 +537,40 @@ async def test_malformed_estimated_minutes_is_rejected(minutes: int) -> None:
         await service.generate_plan(project.id, assessment.id)
 
     assert refused.value.reason == "invalid_task_payload"
+
+
+@pytest.mark.parametrize("prerequisites", [123, True, None], ids=["number", "boolean", "null"])
+async def test_a_non_sequence_prerequisite_list_is_an_invalid_payload(
+    prerequisites: Any,
+) -> None:
+    """``prerequisite_task_ids`` that cannot be iterated is a 422 reason, never a 500.
+
+    A number or boolean used to reach ``list()`` in ``_parse_tasks`` and raise ``TypeError``,
+    which the API answers as a redacted 500; an explicit ``null`` was silently folded into "no
+    prerequisites", which is a different answer than the model gave. Both are unreadable payloads.
+    """
+    tasks = [task_payload("a", 0, "ops-1", prerequisite_task_ids=prerequisites)]
+    service, project = await make_service(assets=make_assets(), model_response=plan_response(tasks))
+    assessment = await submit(service)
+
+    with pytest.raises(PlanValidationError) as refused:
+        await service.generate_plan(project.id, assessment.id)
+
+    assert refused.value.reason == "invalid_task_payload"
+
+
+async def test_a_missing_prerequisite_key_still_defaults_to_no_prerequisites() -> None:
+    """Absent is not malformed: the domain default (no prerequisites) keeps working."""
+    task = task_payload("a", 0, "ops-1")
+    del task["prerequisite_task_ids"]
+    service, project = await make_service(
+        assets=make_assets(), model_response=plan_response([task])
+    )
+    assessment = await submit(service)
+
+    plan = await service.generate_plan(project.id, assessment.id)
+
+    assert plan.tasks[0].prerequisite_task_ids == []
 
 
 async def test_stage_order_rule_can_be_disabled_by_planner_config() -> None:

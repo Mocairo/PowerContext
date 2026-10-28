@@ -173,6 +173,11 @@ def _check_citations(
     # as ``invalid_task_payload`` — so there is no missing-citation branch to take here. What is
     # left to check is whether each citation the task *does* carry resolves to this project's own
     # active evidence.
+    #
+    # ``config.every_task_requires_citation`` is deliberately not read here: the rule is enforced
+    # unconditionally by the domain model above, so the setting documents that invariant rather
+    # than toggling it (flipping it off would change nothing, and pretending otherwise would
+    # misdescribe a real behaviour the validator does not own).
     for citation in task.citations:
         asset = assets_by_id.get(citation.asset_id)
         if asset is None or asset.project_id != plan.project_id:

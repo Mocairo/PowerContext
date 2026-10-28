@@ -247,8 +247,23 @@ async def test_a_plan_with_a_material_gap_is_returned_as_an_inactive_draft() -> 
             "plan_validation_failed",
             "invalid_task_payload",
         ),
+        (
+            [task_payload("a", 0, "ops-1", prerequisite_task_ids=123)],
+            "plan_validation_failed",
+            "invalid_task_payload",
+        ),
+        (
+            [task_payload("a", 0, "ops-1", prerequisite_task_ids=True)],
+            "plan_validation_failed",
+            "invalid_task_payload",
+        ),
+        (
+            [task_payload("a", 0, "ops-1", prerequisite_task_ids=None)],
+            "plan_validation_failed",
+            "invalid_task_payload",
+        ),
     ],
-    ids=["cycle", "malformed_task"],
+    ids=["cycle", "malformed_task", "prereq_number", "prereq_boolean", "prereq_null"],
 )
 async def test_an_unacceptable_plan_answers_with_the_reason_and_no_model_text(
     tasks: list[dict[str, Any]], code: str, reason: str

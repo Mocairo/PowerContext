@@ -94,6 +94,27 @@ def test_yaml_values_override_defaults(tmp_path: Path) -> None:
     assert config.planner.environment_before_experiments is False
 
 
+# Finding 2 (follow-up): the other planner flag must be YAML-loadable too, not
+# just defaulted.  ``enforce_stage_order`` defaults to True, so a YAML file that
+# sets it false proves the value comes from the file rather than the default.
+def test_yaml_enforce_stage_order_false_beats_default(tmp_path: Path) -> None:
+    root = _write_configs(
+        tmp_path,
+        planner="planning:\n  constraints:\n    enforce_stage_order: false\n",
+    )
+    config = load_app_config(root)
+    assert config.planner.enforce_stage_order is False
+
+
+def test_enforce_stage_order_defaults_true_when_yaml_omits_it(tmp_path: Path) -> None:
+    root = _write_configs(
+        tmp_path,
+        planner="planning:\n  constraints:\n    environment_before_experiments: true\n",
+    )
+    config = load_app_config(root)
+    assert config.planner.enforce_stage_order is True
+
+
 # Finding 2: positive embedding dimensions must be parsed, not just the absent case.
 def test_positive_embedding_dimensions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1024")
