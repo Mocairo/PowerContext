@@ -5,10 +5,11 @@ dependencies, so no route imports a repository, an engine or a gateway directly.
 service is answered as 503 rather than crashing: production is not runnable until Task 12 supplies
 the one dependency factory, and an operator deserves a code for that state instead of a traceback.
 
-``require_project`` exists because the read-only routes have no service-level lookup to lean on.
+``ensure_project`` exists because the routes have no other project lookup to lean on.
 ``LabRelayService.import_project_files`` raises ``KeyError`` for an unknown project (Task 5), but
 ``repository.list_assets`` and the engine both answer empty, which would make 「还没有资料」and
-「项目不存在」indistinguishable to Task 14.
+「项目不存在」indistinguishable to Task 14. Every project-scoped route calls it first and then works
+from the returned project, so one lookup decides both the 404 and the id the route acts on.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def get_service(request: Request) -> LabRelayService:
     return service
 
 
-async def require_project(service: LabRelayService, project_id: str) -> Project:
+async def ensure_project(service: LabRelayService, project_id: str) -> Project:
     """The project behind a path parameter, or a 404 that names it."""
     project = await service.repository.get_project(project_id)
     if project is None:

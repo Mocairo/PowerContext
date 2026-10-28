@@ -7,9 +7,11 @@ faked (PowerContext is Task 9) and one repository subclass raises on a single me
 how a dead seekdb connection will look to this layer (Task 7).
 
 Two rulings shape the surface beyond the plan's snippets: every request gets a generated
-identifier echoed as ``X-LabRelay-Request-Id``, and every error — route-raised or framework-raised
-— is returned as ``{"error": {"code", "message", "details"}, "request_id"}`` with no exception
-text in it (spec 17.2, 19.1).
+identifier echoed as ``X-LabRelay-Request-Id`` — a caller-supplied one is replaced, never adopted —
+and every error — route-raised or framework-raised — is returned as
+``{"error": {"code", "message", "details"}, "request_id"}`` with no exception text in it
+(spec 17.2, 19.1). A dependency outage is recognised only from the application layer's own typed
+error, never from an arbitrary ``ValueError``.
 """
 
 from __future__ import annotations
@@ -27,14 +29,18 @@ import yaml
 from labrelay.api.errors import REQUEST_ID_HEADER
 from labrelay.api.main import create_app, create_app_with_service
 from labrelay.api.schemas import SearchRequest
-from labrelay.application.services import LabRelayService
+from labrelay.application.services import ContextServiceUnavailableError, LabRelayService
 from labrelay.config import LabRelayConfig
+from labrelay.importers.assets import ImportResult
 from labrelay.persistence.memory import InMemoryRepository
 from labrelay.retrieval.in_memory import InMemorySearchEngine
 
 APP_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "app.yaml"
 RETRIEVAL_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "retrieval.yaml"
 API_LOGGER = "labrelay.api.errors"
+ROUTES_LOGGER = "labrelay.api.routes"
+# What a caller might try to smuggle into the response header and the log line.
+INBOUND_REQUEST_ID = "request-forged-by-the-caller"
 
 
 class FakeModel:
@@ -68,6 +74,13 @@ class EmptyScopeContext(FakeContext):
         return "", ""
 
 
+class ValueErrorContext(FakeContext):
+    """A gateway that raises a plain ``ValueError``, which is not a declared outage."""
+
+    async def ensure_scopes(self, project):
+        raise ValueError("PowerContext token is not a valid UUID")
+
+
 class ExplodingRepository(InMemoryRepository):
     """A store that fails the way an unreachable seekdb will: loudly, with a secret in it."""
 
@@ -77,13 +90,34 @@ class ExplodingRepository(InMemoryRepository):
         raise RuntimeError(self.message)
 
 
+class VanishingDirectoryService(LabRelayService):
+    """The route's precheck passed and then the folder went away: the importer's own guard fires.
+
+    ``import_directory`` re-reads ``is_dir()`` and raises this very ``ValueError``, but making the
+    filesystem change mid-request is not reproducible, so the window is replayed at the seam.
+    """
+
+    failure: Exception = ValueError("Import source /tmp/gone is not an existing directory")
+
+    async def import_project_files(self, project_id: str, source_path: Path) -> ImportResult:
+        raise self.failure
+
+
+class BrokenImportService(LabRelayService):
+    """An import that fails for a reason that is not the path, which must stay a 500."""
+
+    async def import_project_files(self, project_id: str, source_path: Path) -> ImportResult:
+        raise RuntimeError("seekdb connection failed password=super-secret-value")
+
+
 def make_service(
     *,
     repository: InMemoryRepository | None = None,
     context: FakeContext | None = None,
+    service_class: type[LabRelayService] = LabRelayService,
 ) -> LabRelayService:
     model = FakeModel()
-    return LabRelayService(
+    return service_class(
         repository=repository if repository is not None else InMemoryRepository(),
         engine=InMemorySearchEngine(model),
         context=context if context is not None else FakeContext(),
@@ -190,6 +224,41 @@ async def test_error_envelope_repeats_the_identifier_of_its_own_response(
     request_id = response.headers[REQUEST_ID_HEADER]
     error = assert_envelope(response.json(), request_id, "project_not_found")
     assert error["details"] == {"project_id": "missing"}
+
+
+async def test_an_inbound_request_id_is_replaced_never_adopted() -> None:
+    """The identifier is a server promise: a caller cannot put its own text in header or body."""
+    async with client_for(make_service()) as client:
+        forged = {REQUEST_ID_HEADER: INBOUND_REQUEST_ID}
+        not_found = await client.get("/api/projects/project-none/assets", headers=forged)
+        validated = await client.post("/api/projects", json={}, headers=forged)
+        created = await client.post(
+            "/api/projects",
+            json={"title": "Aurora", "research_area": "DL", "description": "x"},
+            headers=forged,
+        )
+
+    ids = [response.headers[REQUEST_ID_HEADER] for response in (not_found, validated, created)]
+    assert all(request_id != INBOUND_REQUEST_ID for request_id in ids)
+    assert all(request_id.startswith("request-") for request_id in ids)
+    assert len(set(ids)) == len(ids), "two callers using one id still get two ids"
+    assert INBOUND_REQUEST_ID not in not_found.text + validated.text + created.text
+    # The body of an error names the very id its own header carries, never the inbound one.
+    assert_envelope(not_found.json(), ids[0], "project_not_found")
+    assert_envelope(validated.json(), ids[1], "validation_failed")
+
+
+async def test_a_missing_project_outranks_an_unusable_import_path(tmp_path: Path) -> None:
+    """The project behind the URL is checked first, so the answer never depends on the path."""
+    a_file = write_note(tmp_path, "baseline.md", "run the baseline\n")
+
+    async with client_for(make_service()) as client:
+        response = await client.post(
+            "/api/projects/project-none/imports", json={"path": str(a_file)}
+        )
+
+    assert response.status_code == 404
+    assert_envelope(response.json(), response.headers[REQUEST_ID_HEADER], "project_not_found")
 
 
 # --- 404 / 422 mapping ---------------------------------------------------------
@@ -420,20 +489,98 @@ async def test_an_unexpected_dependency_failure_returns_a_redacted_internal_erro
     assert "super-secret-value" not in caplog.text
 
 
-async def test_a_gateway_without_scopes_is_reported_as_an_unavailable_dependency() -> None:
-    async with client_for(make_service(context=EmptyScopeContext())) as client:
+async def test_a_gateway_without_scopes_is_reported_as_an_unavailable_dependency(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=ROUTES_LOGGER):
+        async with client_for(make_service(context=EmptyScopeContext())) as client:
+            response = await client.post(
+                "/api/projects",
+                json={"title": "Aurora", "research_area": "DL", "description": "x"},
+            )
+
+    assert response.status_code == 503
+    request_id = response.headers[REQUEST_ID_HEADER]
+    error = assert_envelope(response.json(), request_id, "dependency_unavailable")
+    assert error["details"] == {"dependency": "context_gateway"}
+    # The service's own text (which names the refused project id) is not echoed back.
+    assert "non-empty memory scope ids" not in response.text
+    # The warning line is the operator's whole story: which request, which refused project.
+    assert f"request_id={request_id}" in caplog.text
+    assert "project_id=project-" in caplog.text
+    assert "non-empty memory scope ids" not in caplog.text
+
+
+async def test_the_service_refuses_unusable_scopes_with_its_typed_dependency_error() -> None:
+    """The narrow exception is what the API maps to 503, and it carries the refused id."""
+    with pytest.raises(ContextServiceUnavailableError) as refused:
+        await make_service(context=EmptyScopeContext()).create_project("Aurora", "DL", "one")
+
+    assert refused.value.project_id.startswith("project-")
+    # Task 5's contract still holds: this is a ValueError, so nothing catching those broke.
+    assert isinstance(refused.value, ValueError)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ValueError("Import source /tmp/gone is not an existing directory"),
+        OSError(20, "Not a directory"),
+    ],
+    ids=["value_error", "os_error"],
+)
+async def test_an_import_path_that_fails_after_the_precheck_is_still_a_422(
+    tmp_path: Path, failure: Exception
+) -> None:
+    """The route and the importer read `is_dir()` at different moments; both answer 422."""
+    write_note(tmp_path, "baseline.md", "run the baseline and compare metrics\n")
+    service = make_service(service_class=VanishingDirectoryService)
+    service.failure = failure
+
+    async with client_for(service) as client:
+        project_id = await create_project(client)
+        response = await client.post(
+            f"/api/projects/{project_id}/imports", json={"path": str(tmp_path)}
+        )
+
+    assert response.status_code == 422
+    error = assert_envelope(
+        response.json(), response.headers[REQUEST_ID_HEADER], "import_path_not_directory"
+    )
+    assert set(error["details"]) == {"path"}
+    assert Path(error["details"]["path"]).name == tmp_path.name
+    assert str(failure) not in response.text
+
+
+async def test_an_import_that_fails_for_another_reason_is_still_an_internal_error(
+    tmp_path: Path,
+) -> None:
+    """Only path failures are a 422: a programming or store error must not be re-labelled."""
+    write_note(tmp_path, "baseline.md", "run the baseline and compare metrics\n")
+
+    async with client_for(make_service(service_class=BrokenImportService)) as client:
+        project_id = await create_project(client)
+        response = await client.post(
+            f"/api/projects/{project_id}/imports", json={"path": str(tmp_path)}
+        )
+
+    assert response.status_code == 500
+    error = assert_envelope(response.json(), response.headers[REQUEST_ID_HEADER], "internal_error")
+    assert error["details"] == {}
+    assert "super-secret-value" not in response.text
+
+
+async def test_an_ordinary_value_error_from_the_gateway_is_not_called_an_outage() -> None:
+    """503 is a claim about a dependency: only the application layer's typed error may make it."""
+    async with client_for(make_service(context=ValueErrorContext())) as client:
         response = await client.post(
             "/api/projects",
             json={"title": "Aurora", "research_area": "DL", "description": "x"},
         )
 
-    assert response.status_code == 503
-    error = assert_envelope(
-        response.json(), response.headers[REQUEST_ID_HEADER], "dependency_unavailable"
-    )
-    assert error["details"] == {"dependency": "context_gateway"}
-    # The service's own ValueError text (which names the project id) is not echoed back.
-    assert "non-empty memory scope ids" not in response.text
+    assert response.status_code == 500
+    assert_envelope(response.json(), response.headers[REQUEST_ID_HEADER], "internal_error")
+    assert "valid UUID" not in response.text
 
 
 async def test_an_api_without_a_wired_service_refuses_requests() -> None:

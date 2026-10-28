@@ -46,6 +46,26 @@ STATUS_CHANGED_EVENT = "status_changed"
 MEMORY_SYNC_FAILED_EVENT = "memory_sync_failed"
 
 
+class ContextServiceUnavailableError(ValueError):
+    """The memory gateway could not give a new project its two scope ids.
+
+    A dependency answer, not bad input: spec 17.3 reserves 503 for exactly this, so the REST
+    layer maps *this class* — and never an arbitrary ``ValueError``, which the service also
+    raises for an illegal task transition — to that status. It stays a ``ValueError`` subclass
+    because Task 5's contract already refuses an unusable gateway answer that way.
+
+    ``project_id`` names the project that was *not* created, so the API can log the identifier
+    the operator needs without logging this message, which is never shown to a caller.
+    """
+
+    def __init__(self, project_id: str) -> None:
+        super().__init__(
+            "ContextGateway must return two non-empty memory scope ids; "
+            f"project {project_id} was not created"
+        )
+        self.project_id = project_id
+
+
 class LabRelayService:
     """Project creation, evidence import, retrieval and task progress for one project store."""
 
@@ -69,8 +89,9 @@ class LabRelayService:
     async def create_project(self, title: str, research_area: str, description: str) -> Project:
         """Open a project, give it its two memory scopes and remember why it exists.
 
-        Raises ``ValueError`` when the gateway hands back an empty or missing scope id: such
-        a project has no memory identity, so it is refused instead of persisted half-made.
+        Raises :class:`ContextServiceUnavailableError` when the gateway hands back an empty or
+        missing scope id: such a project has no memory identity, so it is refused instead of
+        persisted half-made.
         """
         project = Project(
             id=f"project-{uuid.uuid4().hex}",
@@ -87,10 +108,7 @@ class LabRelayService:
         # as a usable one and every later memory call would silently target nothing, so this
         # fails loudly instead — the only place Task 5 refuses a gateway answer.
         if not project_scope or not learner_scope:
-            raise ValueError(
-                "ContextGateway must return two non-empty memory scope ids; "
-                f"project {project.id} was not created"
-            )
+            raise ContextServiceUnavailableError(project.id)
         project = project.model_copy(
             update={"project_scope_id": project_scope, "learner_scope_id": learner_scope}
         )
