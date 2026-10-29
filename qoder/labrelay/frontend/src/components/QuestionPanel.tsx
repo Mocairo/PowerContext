@@ -37,9 +37,20 @@ function formatLocator(locator: Citation["locator"]): string {
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(" · ") : "";
 }
 
+const QODER_MODEL_LABELS: Record<string, string> = {
+  qfmodel: "Qwen3.8-Flash",
+  qmodel_38max: "Qwen3.8-Max",
+  gfmodel: "GLM-5.3-Flash",
+  dfmodel: "DeepSeek-Flash",
+  kmodel: "Kimi-K2.8-Preview",
+  mmodel: "MiniMax-M3.1-Flash",
+};
+
 function providerLabel(runtime: RuntimeStatus | null): string {
   if (!runtime) return "未读取";
-  if (runtime.model_provider === "qoder") return `Qoder · ${runtime.model}`;
+  if (runtime.model_provider === "qoder") {
+    return `Qoder · ${QODER_MODEL_LABELS[runtime.model] ?? runtime.model}`;
+  }
   if (runtime.model_provider === "openai_compat") return `OpenAI 兼容 · ${runtime.model}`;
   return `离线确定性 · ${runtime.model}`;
 }

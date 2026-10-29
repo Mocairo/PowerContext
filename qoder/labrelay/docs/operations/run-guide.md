@@ -133,7 +133,7 @@ uv run --directory backend uvicorn labrelay.api.main:create_default_app \
 qodercli login
 ```
 
-然后用 `LABRELAY_MODEL_PROVIDER=qoder` 重启后端（默认模型 `qwen3.8-flash`）：
+然后用 `LABRELAY_MODEL_PROVIDER=qoder` 重启后端（默认模型 `qfmodel`，即 Qwen3.8-Flash；用 SDK 的模型列表可查全部 key）：
 
 ```bash
 PYTHONPATH="$(pwd)/backend/src" \
