@@ -7,8 +7,8 @@
 
 | 模式 | 依赖 | 用途 | 验证状态 |
 | --- | --- | --- | --- |
-| 离线演示 | 无 seekdb / 无 PowerContext / 无模型 Key | 走完上传→检索→交接→路径→进度→问答的完整闭环 | 已实跑（后端 486 项测试 + HTTP 冒烟 + 浏览器全流程 + 展示站实跑面板调用链） |
-| 真实栈 | seekdb + PowerContext + OpenAI 兼容模型 | 生产形态 | seekdb 已实跑；PowerContext 服务端**从未实跑**，见 `powercontext.md` |
+| 离线演示 | 无 seekdb / 无 PowerContext / 无模型 Key | 走完上传→检索→交接→路径→进度→问答的完整闭环 | 已实跑（后端 493 项测试 + HTTP 冒烟 + 浏览器全流程 + 展示站实跑面板调用链） |
+| 真实栈 | seekdb + PowerContext + 模型 provider | 生产形态 | seekdb 已实跑；PowerContext 1.4.1 服务端已实跑并修掉一个 Critical 契约缺陷，见 `powercontext.md` |
 
 离线演示不是「假数据糊弄过去」：仓储、检索、规划校验、进度状态机、交接链路、凭据脱敏全部走的是
 同一份生产代码，只有四个端口（repository / search engine / context gateway / model gateway）换成
@@ -190,7 +190,7 @@ seekdb 的补列 ALTER 是一次表重写，本地实测约 18 秒，所以建�
 ## 6. 测试与检查
 
 ```bash
-uv run --directory backend pytest                              # 486 passed, 4 skipped
+uv run --directory backend pytest                              # 493 passed, 5 skipped
 uv run --directory backend ruff check src tests
 uv run --directory backend ruff format --check src tests
 npm --prefix frontend run typecheck
@@ -198,8 +198,9 @@ npm --prefix frontend run build
 uv run --directory backend python ../scripts/smoke_api.py      # 端到端 HTTP 冒烟
 ```
 
-`skipped` 的 4 项是需要真实 seekdb 的集成测试，跑法见 `seekdb.md`；
-`make backend-test` 全绿**不代表** seekdb 路径被验证过。
+`skipped` 的 5 项是需要真实依赖的集成测试，跑法见 `seekdb.md`（4 项 seekdb）与
+`powercontext.md`（1 项 PowerContext 服务端）。
+`uv run --directory backend pytest` 全绿**不代表** seekdb 或 PowerContext 路径被验证过。
 
 ## 7. 展示站的实跑面板接口
 

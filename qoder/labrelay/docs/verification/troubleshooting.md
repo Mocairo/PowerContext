@@ -144,15 +144,36 @@ uv run --directory backend python -c "import pymysql;print(pymysql.connect(host=
 
 本项目实测经 WSL2 调用：`wsl.exe docker ps`。docker CLI 不在 Windows PATH 里时不要反复重试原命令。
 
-## PowerContext（**以下均未实跑**）
+## PowerContext
 
-这一段是依据 1.4.1 客户端模型和内置 schema 推导的风险清单，不是观测记录。
-第一次连真实服务端时优先怀疑这里。
+2026-10-29 起这一段分两类：**已实测**的（连着真实 1.4.1 服务端跑出来的）和**仍属推导**的。
+推导条目会继续标注，别把它们当观测结果。启动配方与逐条日志见
+`../operations/powercontext.md` 和 `powercontext-live.md`。
+
+### 已实测：交接确认返回 `409 source_conflict`
+
+服务端按 `(scope, source_type, source_id)` 存每次 work capture 的 Source，同一身份正文不同即冲突。
+如果 `confirm` / `record_outcome` 把证据 Source 的 id 复用成 Work Contract、current-work Handoff
+或 Outcome 的 `source_id`，`create_source` 之后的第一个 capture 必然 409。
+**离线单测照不出来**：内存替身不校验 Source 身份唯一性。
+现在每个 capture 用自己独立的 id，看到这条报错先查是不是又有代码把 id 传重复了。
+因果验证过：把独立 id 改回复用，live 测试立刻 409。
+
+### 已实测：`422 invalid_access_request`（启用认证时的 receiver 约束）
+
+access enforced 时服务端要求 accepted 回执的 `receiver` 等于认证 principal id
+（静态 bearer 是 `server-token`），也就是不能替别人确认交接。
+LabRelay 的 `receiver` 是给人看的域标签（`new-student`），所以：
+
+- 演示 / 单机：**access 关掉**，principal 为 None，守卫跳过，域标签随便用；
+- 硬隔离部署：以接手人身份认证，且 `receiver` 必须等于该 principal。
+
+不要因为这条去改客户端硬编码 `server-token`——那是把域语义写死。
 
 ### `powercontext server --help` 报 `No module named 'typer'`
 
-仓库依赖是 `powercontext[client]`，不含 CLI/服务端依赖。需要
-`uv sync --directory backend --extra server` 之后才有 `powercontext` 命令。
+仓库依赖是 `powercontext[client]`，不含 CLI/服务端依赖。实跑用的是 WSL2 里独立
+`pip install 'powercontext[server,cli]'` 的 venv，不是仓库虚拟环境。
 
 ### 交接确认返回 500 而不是 4xx
 
@@ -166,11 +187,14 @@ uv run --directory backend python -c "import pymysql;print(pymysql.connect(host=
 LabRelay 在请求模型层已经拦掉第 1 条（422）。若还出现 500，先看日志里的 `exception_class`，
 再对照生成模型的 json schema 逐字段核对，不要靠猜改代码。
 
+> 第 2、3 条仍属**推导**：读的是 1.4.1 生成模型的 schema，没有在服务端实测触发过。
+
 ### 凭据字符串被服务端拒绝
 
 `CreateSourceRequest.content` 会拒绝服务端保留的 payload schema（比如交接回执结构），
 空串和纯空白字符串也拒绝。LabRelay 把交接证据作为普通 `content` Source 创建，
 回执结构只通过专用交接接口产生。
+（实测过的是 `create_source` 正常返回 201；被拒路径未实测触发。）
 
 ### `503 dependency_unavailable`
 

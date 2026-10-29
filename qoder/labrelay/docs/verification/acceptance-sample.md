@@ -91,8 +91,10 @@ uv run --directory backend python ../scripts/smoke_api.py http://127.0.0.1:8010
   `current_stage / completed / blockers / next_task` 四项，且全部来自 seekdb 事实。
 - **seekdb 里有真实检索记录**：`uv run --directory backend pytest` 里那 4 个 skip 项就是这条，
   需要 `LABRELAY_SEEKDB_TEST=1` 连真实 seekdb 跑，见 `../operations/seekdb.md`。
-- **PowerContext 里有真实 Memory/Handoff/召回**：**这条尚未验证**，需要真实服务端，
-  见 `../operations/powercontext.md` 的验证状态说明。
+- **PowerContext 里有真实 Memory/Handoff/召回**：**已实跑**（2026-10-29 连真实 1.4.1 服务端），
+  Scope / 记忆写入读回 / prepare / commit / continue / acknowledge / outcome 全链路 2xx，
+  由门控测试 `tests/integration/test_powercontext_live.py` 固定；逐条日志见 `powercontext-live.md`。
+  跑法见 `../operations/powercontext.md`。
 - **重规划不删除已提交证据**：完成记录通过 `source_task_id` 映射到新任务 id，
   事件仍按源任务 id 查询，冒烟第 19 步会打印继承下来的 done 任务。
 

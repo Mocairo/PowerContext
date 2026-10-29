@@ -14,11 +14,11 @@ React 前端、示例与端到端验收、运行与验证文档）已落地；�
 `site/` 目前只是占位目录。
 
 ```text
-后端  486 passed, 4 skipped（skipped 是需要真实 seekdb 的集成测试）
+后端  493 passed, 5 skipped（skipped 是需要真实 seekdb 或真实 PowerContext 服务端的集成测试）
 前端  tsc --noEmit 与 vite build 均通过
 实跑  离线端到端 HTTP 冒烟全绿；浏览器完成建项目→导入→检索→交接→测评→路径→推进→问答
 seekdb  4 项集成测试连本地容器通过（2026-10-29）
-PowerContext  适配器已完成，服务端从未实跑，见 docs/operations/powercontext.md
+PowerContext  1.4.1 服务端已实跑（2026-10-29），交接全链路 2xx；实跑暴露并修掉 409 source_conflict
 ```
 
 ## 目录结构

@@ -63,34 +63,71 @@ PowerContext 的引用是 `ArtifactReference` / `SourceReference`。
 交接里两侧语义不同，实现上的处理是：Work Contract 的 facts 用 `basis = declared` + 空 evidence，
 真实的 LabRelay 引用随前一步创建的 Source 正文一起带过去，不伪装成 PowerContext 的 artifact ref。
 
-## 启动方式（未实跑）
+## 启动与实跑（2026-10-29 已跑通真实服务端）
 
-后端依赖装的是 `powercontext[client]`，不含服务端 CLI（`powercontext` 命令需要 `typer`，
-本地实测报 `ModuleNotFoundError: No module named 'typer'`）。若要起服务，需要额外安装 server 侧依赖：
+后端依赖装的是 `powercontext[client]`，不含服务端 CLI（`powercontext` 命令需要 `typer`）。
+实跑用的是 WSL2 Ubuntu 里独立安装的 1.4.1 服务端：
 
 ```bash
-uv sync --directory backend --extra dev --extra server
-uv run --directory backend powercontext server --help
-PYTHONPATH="$(pwd)/backend/src" POWERCONTEXT_URL=http://127.0.0.1:8000 \
-  POWERCONTEXT_TOKEN=<token> \
-  uv run --directory backend uvicorn labrelay.api.main:create_default_app \
-  --factory --host 127.0.0.1 --port 8010
+# WSL2 Ubuntu
+python3 -m venv ~/pc-venv
+~/pc-venv/bin/pip install 'powercontext[server,cli]'
+export POWERCONTEXT_SERVER_ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true
+~/pc-venv/bin/powercontext server run --host 0.0.0.0 --port 8100
 ```
 
-> **验证状态：PowerContext 服务端从未实跑过。**
->
-> 上面的命令没有在本机执行成功过，因此 `POWERCONTEXT_TOKEN` 的认证行为、
-> 服务端对 Work Contract / Handoff payload 的实际校验强度、以及 Scope 幂等键的落库形态，
-> 都是**按 1.4.1 客户端生成的模型和内置 schema 推导出来的，不是跑出来的**。
->
-> 已验证的部分只有：
-> - 客户端模型的字段约束（`PreparedHandoff`、`HandoffContent`、`ArtifactReference`、
->   `SourceReference`、`CreateSourceRequest` 的 json schema 已逐条读过并写进测试）；
-> - 适配器在离线替换实现下能走通完整交接链路（内存实现严格复用同一套 payload 校验）；
-> - 严格回执规则在 422 层被拦住。
->
-> 第一次真正连服务端时最可能出问题的地方，就是 `docs/verification/troubleshooting.md`
-> 里标了「未实跑」的那几条。
+Windows 侧驱动门控的 live 测试：
+
+```bash
+cd qoder/labrelay/backend
+POWERCONTEXT_URL="http://127.0.0.1:8100" \
+POWERCONTEXT_CLIENT_ALLOW_INSECURE_HTTP=true \
+LABRELAY_POWERCONTEXT_TEST=1 \
+uv run --extra dev pytest tests/integration/test_powercontext_live.py -q
+```
+
+不带 `LABRELAY_POWERCONTEXT_TEST` 时该测试 skip，因此离线 CI 全绿不代表连过真实服务端——
+和 seekdb 那 4 项是同一个道理。逐条观测记录见 `../verification/powercontext-live.md`。
+
+### 实跑结果
+
+```text
+create_scope 201 · remember_memory 200 · prepare_context 200 · create_source 201
+create_work_contract 202 · handoff_current_work 200 · commit_handoff 200
+continue_handoff 200 · acknowledge_handoff 200 · create_source 201 · record_task_outcome 202
+```
+
+`tests/integration/test_powercontext_live.py` 1 passed（2026-10-29 在 Windows 侧独立复跑通过）。
+
+### 实跑暴露并已修掉的契约问题
+
+**`409 source_conflict`。** 服务端把每次 work capture 以 `(scope, source_type, source_id)` 存成一行
+Source，同一身份再次 capture 且正文不同就报 `SourceConflictError`（`identity` 冲突）。
+`confirm` 原先把证据 Source 的 id 又当作 Work Contract 与 current-work Handoff 的 `source_id` 复用，
+所以 `create_source` 之后的**第一个 capture 就必然 409**；`record_outcome` 同理。
+内存替身从不校验 Source 身份唯一性，离线全绿也照不出来。
+修法是每个 capture 用自己独立的 id（`handoff-contract:{project}:{uuid}` 等），
+证据 Source 仍单独创建以携带引用。已验证因果：把改动反向打回去，live 测试立刻
+`HTTP 409 (source_conflict)`。
+
+**`422 invalid_access_request`（receiver 与 principal 绑定，属部署约束不是代码缺陷）。**
+服务端启用 bearer 认证（access enforced）后要求 **accepted 回执的 `receiver` 等于认证 principal id**
+（静态 bearer 固定为 `server-token`），语义是「不能替别人确认交接」。LabRelay 的 `receiver` 是
+域内人类标签（如 `new-student`），与该约束冲突。两种正确用法：
+
+| 部署形态 | access | `receiver` 取值 |
+| --- | --- | --- |
+| 演示 / 单机 | 关闭 | 域标签自由使用（principal 为 None，守卫跳过） |
+| 硬隔离 | enforced | 调用方必须以接手人身份认证，`receiver` 必须等于该 principal |
+
+LabRelay 不在客户端强行改写 `receiver`：域标签要保留给学习和交接记录阅读。
+**因此演示场景必须 access 关闭**，这一点在 `../verification/troubleshooting.md` 也有对应条目。
+
+### 仍未验证的部分
+
+- 未配置推理模型，检索走词法通道；记忆与交接的**持久化与读回**已实测，向量召回质量未测。
+- 本次是 access 关闭 + 明文 HTTP（WSL NAT 内网），非生产安全姿态。
+- 服务端用内置 SQLite 存储；换成 seekdb/OceanBase 后端未覆盖。
 
 ## 不可用时的降级
 
