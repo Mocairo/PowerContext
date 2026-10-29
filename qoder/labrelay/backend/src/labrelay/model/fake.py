@@ -34,6 +34,10 @@ MAX_QUOTED_HITS = 3
 OFFLINE_ANSWER_PREFIX = "以下为项目资料原文摘录（离线确定性模型，未做推理）："
 NO_EVIDENCE_ANSWER = "无法从项目资料确认。"
 
+#: Same disclosure as the answer path, plus a cap on how much request text is echoed.
+OFFLINE_CHECK_HEADLINE = "离线确定性模型：没有推理，只回显本次请求"
+MAX_CHECK_ECHO_CHARS = 200
+
 
 def _named(value: object) -> str:
     """A usable namespace taken from one payload field, or the empty string."""
@@ -80,6 +84,8 @@ class DeterministicModelGateway:
     ) -> dict[str, object]:
         if isinstance(user_payload, dict) and "question" in user_payload:
             return self._answer_question(user_payload)
+        if isinstance(user_payload, dict) and "prompt" in user_payload:
+            return self._check_prompt(user_payload)
 
         stages = user_payload.get("stages") if isinstance(user_payload, dict) else None
         if not isinstance(stages, list):
@@ -152,4 +158,19 @@ class DeterministicModelGateway:
             "answer": f"{OFFLINE_ANSWER_PREFIX}" + "；".join(quoted),
             "sufficient": True,
             "used_asset_ids": used,
+        }
+
+    def _check_prompt(self, user_payload: dict[str, object]) -> dict[str, object]:
+        """Answer the panel's model probe by echoing the request; there is nothing to reason with.
+
+        A canned "先核对数据缓存" headline would have read like a model conclusion drawn from this
+        project's evidence; the offline gateway has no such understanding, so it says so instead.
+        """
+        prompt = user_payload.get("prompt")
+        text = prompt.strip() if isinstance(prompt, str) else ""
+        return {
+            "headline": OFFLINE_CHECK_HEADLINE,
+            "next_step": f"请求原文：{text[:MAX_CHECK_ECHO_CHARS]}"
+            if text
+            else "请求未带 prompt。",
         }

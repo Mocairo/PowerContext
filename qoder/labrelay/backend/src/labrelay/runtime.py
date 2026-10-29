@@ -66,4 +66,22 @@ def build_service(config: LabRelayConfig, *, fake_dependencies: bool = False) ->
     return build_runtime(config, fake_dependencies=fake_dependencies).service
 
 
-__all__ = ["Runtime", "build_runtime", "build_service"]
+def describe(service: LabRelayService) -> dict[str, str]:
+    """Name the dependency set a service is actually wired to, for the demo panel's status call.
+
+    The panel has to say which stack it is talking to, and this module is the only one allowed to
+    know the concrete classes — the API layer must not import them to find out.
+    """
+    return {
+        "backend": "seekdb" if isinstance(service.repository, SeekdbRepository) else "memory",
+        "context": "powercontext" if isinstance(service.context, PowerContextService) else "memory",
+        "model": getattr(service.model, "model", None) or type(service.model).__name__,
+        "model_provider": (
+            "openai_compat"
+            if isinstance(service.model, OpenAICompatModelGateway)
+            else "deterministic"
+        ),
+    }
+
+
+__all__ = ["Runtime", "build_runtime", "build_service", "describe"]

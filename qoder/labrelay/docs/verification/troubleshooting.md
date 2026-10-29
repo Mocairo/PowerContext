@@ -55,7 +55,7 @@ Vite 端口被占会自动 +1（5173→5174→5175…）。核对浏览器地址
 
 ```text
 根因：示例目录只有 .gitkeep 占位，没有可检索的证据
-处理：确认导入的是 qoder/labrelay/examples/demo-project，正常应为 assets=10 chunks=44 restricted=1
+处理：确认导入的是 qoder/labrelay/examples/demo-project，正常应为 assets=14 restricted=1（chunks 随正文长度浮动）
 ```
 
 ### 导入路径解析不到

@@ -7,7 +7,7 @@
 
 | 模式 | 依赖 | 用途 | 验证状态 |
 | --- | --- | --- | --- |
-| 离线演示 | 无 seekdb / 无 PowerContext / 无模型 Key | 走完导入→检索→交接→路径→进度→问答的完整闭环 | 已实跑（后端 474 项测试 + HTTP 冒烟 + 浏览器全流程） |
+| 离线演示 | 无 seekdb / 无 PowerContext / 无模型 Key | 走完导入→检索→交接→路径→进度→问答的完整闭环 | 已实跑（后端 478 项测试 + HTTP 冒烟 + 浏览器全流程 + 展示站实跑面板调用链） |
 | 真实栈 | seekdb + PowerContext + OpenAI 兼容模型 | 生产形态 | seekdb 已实跑；PowerContext 服务端**从未实跑**，见 `powercontext.md` |
 
 离线演示不是「假数据糊弄过去」：仓储、检索、规划校验、进度状态机、交接链路、凭据脱敏全部走的是
@@ -119,7 +119,7 @@ seekdb 的补列 ALTER 是一次表重写，本地实测约 18 秒，所以建�
 ## 6. 测试与检查
 
 ```bash
-uv run --directory backend pytest                              # 474 passed, 4 skipped
+uv run --directory backend pytest                              # 478 passed, 4 skipped
 uv run --directory backend ruff check src tests
 uv run --directory backend ruff format --check src tests
 npm --prefix frontend run typecheck
@@ -130,7 +130,33 @@ uv run --directory backend python ../scripts/smoke_api.py      # 端到端 HTTP 
 `skipped` 的 4 项是需要真实 seekdb 的集成测试，跑法见 `seekdb.md`；
 `make backend-test` 全绿**不代表** seekdb 路径被验证过。
 
-## 7. 公开展示站的边界
+## 7. 展示站的实跑面板接口
+
+`qoder/labrelay/site` 的 live 面板除了普通项目接口外，还依赖三个演示专用端点，它们由
+`create_app` 一并挂载，**不需要**另起一个 app 工厂：
+
+| 端点 | 作用 |
+| --- | --- |
+| `GET /api/demo/status` | 报告当前接的是哪套依赖：backend / context / model / model_provider |
+| `POST /api/demo/bootstrap` | 用绝对路径导入 `examples/demo-project`，建项目并生成一份待确认的交接草案 |
+| `POST /api/demo/model` | 探针：让**已配置的那个**模型网关返回 `{headline, next_step}` |
+
+要点：
+
+- `DEMO_PROJECT_ROOT` 由包位置解析（`api/demo.py` 往上四级），不受后端工作目录影响——
+  React 工作台的相对默认路径没有这个保证。
+- 只有一个模型网关实现。`/api/demo/model` 走的是 `ModelGateway` 端口：离线跑时由确定性网关
+  回显请求并明确标注「没有推理」，配了 `GENERATION_*` 时由真实网关作答。
+  不存在第二个 Qoder 专用网关。
+- 模型通道不可用（未配置或响应畸形）返回 **503 `dependency_unavailable`**，`details.dependency = "model"`，
+  不会把上游错误原文带进响应体。
+- CORS 只放行四个 loopback origin：`127.0.0.1`/`localhost` 的 4173 与 5173。
+  实测带 `Origin: http://127.0.0.1:4173` 预检返回该 allow-origin 头，
+  带 `Origin: https://evil.example` 直接 400。没有通配符。
+- 面板第 3 步要用**中文查询**命中 `notes/debugging.md`，靠的是内存引擎的 CJK 单字 + 二元组切分
+  （与 seekdb 的 `ngram` 全文分析器对齐）。这条由 `tests/unit/test_search.py` 钉住。
+
+## 8. 公开展示站的边界
 
 Qoder Sites 发布出来的是**公开 HTTPS 静态站**，浏览器在那里访问不到你本机的 `127.0.0.1:8010`，
 所以「点一下就能看到自己的资料被索引」这种实跑演示只能在本地站点做。展示站只放脱敏截图、

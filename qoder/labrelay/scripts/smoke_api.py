@@ -256,6 +256,46 @@ def main() -> int:
             f"disposition={rv.get('draft', {}).get('disposition')}",
         )
 
+        demo_status = client.get("/api/demo/status")
+        step(
+            "GET /api/demo/status names the running stack",
+            demo_status.status_code == 200
+            and Path(demo_status.json()["demo_project_root"]).is_dir(),
+            str(demo_status.json()),
+        )
+
+        demo = client.post("/api/demo/bootstrap")
+        demo_body = demo.json() if demo.status_code == 200 else {}
+        step(
+            "POST /api/demo/bootstrap drafts a handoff with resolvable citations",
+            demo.status_code == 200
+            and demo_body.get("draft_id")
+            and [c["title"] for c in demo_body.get("citations", [])]
+            == ["metrics.csv", "debugging.md"],
+            f"assets={demo_body.get('assets')} chunks={demo_body.get('chunks')} "
+            f"restricted={demo_body.get('restricted')}",
+        )
+
+        demo_search = client.post(
+            f"/api/projects/{demo_body['project_id']}/search",
+            json={"query": "数据缓存 问题 baseline", "asset_kinds": [], "limit": 5},
+        )
+        step(
+            "a Chinese query reaches the debugging note",
+            demo_search.status_code == 200
+            and {"debugging.md", "metrics.csv"}
+            & {hit["citation"]["title"] for hit in demo_search.json()["hits"]},
+            str([hit["citation"]["title"] for hit in demo_search.json()["hits"]]),
+        )
+
+        demo_model = client.post("/api/demo/model", json={"prompt": "下一步做什么"})
+        step(
+            "POST /api/demo/model answers through the configured gateway",
+            demo_model.status_code == 200
+            and set(demo_model.json().get("result", {})) == {"headline", "next_step"},
+            str(demo_model.json().get("model")),
+        )
+
         print(
             f"\nimport: assets={summary.get('assets')} chunks={summary.get('chunks')} "
             f"failed={summary.get('failed')} skipped={summary.get('skipped')} "

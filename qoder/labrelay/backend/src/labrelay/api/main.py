@@ -12,13 +12,25 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
+from labrelay.api.demo import build_demo_router
 from labrelay.api.errors import configure_error_surface
 from labrelay.api.routes import build_router
 from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.config import LabRelayConfig, load_app_config
-from labrelay.runtime import Runtime, build_runtime
+from labrelay.runtime import Runtime, build_runtime, describe
+
+#: The showcase's live panel is a local tool: it runs from the static site served on 4173 or the
+#: Vite workbench on 5173, both on loopback. No wildcard, and no public origin can reach this API
+#: through a browser — which matches the backend's own bind address.
+LOCAL_SITE_ORIGINS = [
+    "http://127.0.0.1:4173",
+    "http://localhost:4173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
 
 
 def _fake_requested(fake_dependencies: bool | None) -> bool:
@@ -70,9 +82,17 @@ def create_app(
 
     app = FastAPI(title="LabRelay", lifespan=lifespan)
     configure_error_surface(app)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=LOCAL_SITE_ORIGINS,
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
     app.state.service = service
     app.state.handoff_service = handoff_service
+    app.state.demo = describe(service) if service is not None else {}
     app.include_router(build_router())
+    app.include_router(build_demo_router())
 
     @app.get("/health/ready")
     async def ready() -> dict[str, str]:

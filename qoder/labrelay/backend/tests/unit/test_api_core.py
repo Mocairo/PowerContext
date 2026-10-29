@@ -645,4 +645,8 @@ def test_the_openapi_document_lists_the_project_and_handoff_surface() -> None:
         "/api/projects/{project_id}/learning-context",
         "/api/plans/{plan_id}",
         "/api/tasks/{task_id}",
+        # The showcase's local live panel: status, corpus bootstrap and a model probe.
+        "/api/demo/status",
+        "/api/demo/bootstrap",
+        "/api/demo/model",
     }

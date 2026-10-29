@@ -26,7 +26,7 @@ uv run --directory backend python ../scripts/smoke_api.py http://127.0.0.1:8010
 | --- | --- | --- | --- | --- |
 | 1 | 依赖就绪 | `GET /health/ready` | 200 `{"status":"ready"}` | `{"status":"ready"}` |
 | 2 | 建项目 | `POST /api/projects` | 201，两个 scope id 非空 | `project:project-…` / `learner:project-…` |
-| 3 | 导入资料 | `POST /api/projects/{id}/imports` | 200，assets/chunks>0，failed=0 | `assets=10 chunks=44 failed=0 skipped=0 restricted=1` |
+| 3 | 导入资料 | `POST /api/projects/{id}/imports` | 200，assets/chunks>0，failed=0 | `assets=14 chunks=58 failed=0 skipped=0 restricted=1`（chunks 随正文长度浮动） |
 | 4 | 受限资料可见性 | `POST /api/projects/{id}/search` | 检索不返回 restricted 正文 | `credential_scan_demo.md` 命中 `api_secret`，正文查不到 |
 | 5 | 混合检索 | `POST /api/projects/{id}/search` | hits>0，每条带 citation + excerpt + locator | 5 hits，`[code] evaluate.py … {"line_start":1,"line_end":38}` |
 | 6 | 「如何复现 baseline」 | 同上 | 能同时看到代码/配置/指标 | 命中 `train.py` / `baseline.yaml` / `metrics_baseline.md` / `reproduction_log.md` |
@@ -71,7 +71,7 @@ uv run --directory backend python ../scripts/smoke_api.py http://127.0.0.1:8010
 浏览器里按顺序做，任何一步卡住都是真问题：
 
 1. 建项目 → 出现「2. 导入资料目录」；检索/交接/测评此时都禁用。
-2. 导入 → 「已导入 10 项资料，44 个片段；失败 0，跳过 0，受限 1。」
+2. 导入 → 「已导入 14 项资料，58 个片段；失败 0，跳过 0，受限 1。」
 3. 检索 → 命中条目显示 `[kind] 标题`、摘录正文、路径与 locator。
 4. 学长交接 → 「生成交接草案」后「确认并提交 Handoff」才可点；确认后显示 `handoff_ref`。
 5. 测评 → 「提交测评并生成路径」，出现「已生成学习路径 v1（状态：active）」。
