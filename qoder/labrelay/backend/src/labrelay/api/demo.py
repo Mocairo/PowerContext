@@ -8,7 +8,6 @@ project endpoint it calls itself.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
@@ -19,11 +18,12 @@ from labrelay.api.errors import DEPENDENCY_UNAVAILABLE, ApiError
 from labrelay.application.handoff import HandoffDraft, HandoffService, HandoffStateItem
 from labrelay.application.services import LabRelayService
 from labrelay.domain.models import Asset, Citation
+from labrelay.paths import PROJECT_ROOT
 
-#: ``backend/src/labrelay/api/demo.py`` -> labrelay, which holds ``examples/``. Resolved from the
-#: package rather than the process cwd, so the panel bootstraps the same corpus no matter where the
-#: backend was started — the React workbench's relative default path carries that assumption.
-DEMO_PROJECT_ROOT = Path(__file__).resolve().parents[4] / "examples" / "demo-project"
+#: Resolved from the shared project root rather than the process cwd, so the panel bootstraps the
+#: same corpus no matter where the backend was started — the React workbench's relative default path
+#: carries that assumption and cannot be relied on.
+DEMO_PROJECT_ROOT = PROJECT_ROOT / "examples" / "demo-project"
 
 MAX_MODEL_PROMPT_CHARS = 2000
 

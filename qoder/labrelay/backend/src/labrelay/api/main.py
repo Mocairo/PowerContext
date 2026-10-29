@@ -20,6 +20,7 @@ from labrelay.api.routes import build_router
 from labrelay.application.handoff import HandoffService
 from labrelay.application.services import LabRelayService
 from labrelay.config import LabRelayConfig, load_app_config
+from labrelay.paths import PROJECT_ROOT
 from labrelay.runtime import Runtime, build_runtime, describe
 
 #: The showcase's live panel is a local tool: it runs from the static site served on 4173 or the
@@ -119,10 +120,9 @@ def create_app_with_service(
 
 def create_default_app() -> FastAPI:
     """Build the app from the repository's YAML and environment for uvicorn."""
-    project_root = Path(__file__).resolve().parents[4]
-    _load_dotenv(project_root / ".env")
+    _load_dotenv(PROJECT_ROOT / ".env")
     return create_app(
-        load_app_config(project_root),
+        load_app_config(PROJECT_ROOT),
         fake_dependencies=os.getenv("LABRELAY_USE_FAKE_DEPS") == "1",
     )
 

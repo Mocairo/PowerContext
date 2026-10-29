@@ -184,6 +184,48 @@ LabRelay 在请求模型层已经拦掉第 1 条（422）。若还出现 500，�
 但检索、计划、任务读写、`learning-context` 都应仍是 200，
 且 `memory_source` 不再是 `powercontext`。
 
+## 配置项写了但没人读
+
+有两个键看起来是配置，实际不参与运行，改它们不会有任何效果：
+
+| 键 | 现状 | 真正生效的地方 |
+| --- | --- | --- |
+| `LABRELAY_API_PORT` / `LABRELAY_API_BIND_ADDRESS` | 只进 `LabRelayConfig.server` | uvicorn 命令行的 `--port` / `--host` |
+| `configs/app.yaml` 的 `server.max_request_bytes` | 没有任何代码读取 | 上传上限由 `configs/security.yaml` 的 `file_import.max_file_bytes` 决定（10 MiB，导入器与上传接口共用同一个常量） |
+
+需要这两个键真正生效时，得先写读取方，不要假设改 YAML 就够了。
+
+## 上传
+
+### 上传后检索不到刚传的文件
+
+先看返回里该文件的 `status`：`restricted` 是**设计成查不到**的（命中凭据检测，只保存不索引），
+不是导入失败。`rejected[]` 里的文件根本没入库。
+
+### 同名文件重复上传会不会变成两份
+
+不会。上传按 `项目 + 路径` 复用同一个 asset，重传覆盖内容并重建片段。
+若你观察到重复，检查的是文件名被清洗成了同一个 leaf name（`a/../notes.md` 与 `notes.md` 同名）。
+
+### `422 upload_rejected`
+
+一次超过 20 个文件，或**全部**文件都被拒绝。后者会带 `rejected[]` 明细，按原因逐个处理即可。
+
+### 单文件 10 MB 卡住
+
+上限从 1 MiB 提到了 10 MiB，导入器和上传接口共用同一个常量（`MAX_FILE_BYTES`）。
+超过就整份拒收，reason 是 `too_large`。
+
+### 传上去的 PDF 有文件、却没片段
+
+PDF 在上传时**跳过**二进制嗅探（`.pdf` 允许扩展名），所以文件会正常落盘；
+如果正文抽不出来（扫描件），它不会进 `rejected`，而是逐文件 `status=failed` 并计入 `failed`。
+实测一份无文字层的 PDF 与一份有文字的 PDF 一起上传：
+`files=[scanned.pdf=failed, good.pdf=active]`，`assets=1 failed=1`。
+扫描件需要先 OCR 再传，`rejected` 里查不到它是正常的——它已经被接受了，只是没产生证据。
+
+`unreadable` 是另一个东西：只在暂存阶段出 `OSError`（上传流断开、目录不可写）时出现。
+
 ## 模型网关
 
 ### `ValueError: No model endpoint configured`

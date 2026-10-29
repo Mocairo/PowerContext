@@ -27,6 +27,7 @@ uv run --directory backend python ../scripts/smoke_api.py http://127.0.0.1:8010
 | 1 | 依赖就绪 | `GET /health/ready` | 200 `{"status":"ready"}` | `{"status":"ready"}` |
 | 2 | 建项目 | `POST /api/projects` | 201，两个 scope id 非空 | `project:project-…` / `learner:project-…` |
 | 3 | 导入资料 | `POST /api/projects/{id}/imports` | 200，assets/chunks>0，failed=0 | `assets=14 chunks=58 failed=0 skipped=0 restricted=1`（chunks 随正文长度浮动） |
+| 3b | 上传自己的资料 | `POST /api/projects/{id}/uploads` | 201，`files[]` 带逐文件 status，被拒的进 `rejected[]` | 见本文末「上传实测」一节：4 入库 + 1 拒收，`secret.md` 标 restricted |
 | 4 | 受限资料可见性 | `POST /api/projects/{id}/search` | 检索不返回 restricted 正文 | `credential_scan_demo.md` 命中 `api_secret`，正文查不到 |
 | 5 | 混合检索 | `POST /api/projects/{id}/search` | hits>0，每条带 citation + excerpt + locator | 5 hits，`[code] evaluate.py … {"line_start":1,"line_end":38}` |
 | 6 | 「如何复现 baseline」 | 同上 | 能同时看到代码/配置/指标 | 命中 `train.py` / `baseline.yaml` / `metrics_baseline.md` / `reproduction_log.md` |
@@ -44,6 +45,35 @@ uv run --directory backend python ../scripts/smoke_api.py http://127.0.0.1:8010
 | 18 | 资料问答 | `POST /api/projects/{id}/questions` | 答案必须带 citation；无证据时明确拒答 | 引用 4 条；空项目返回「无法从项目资料确认。」且 citations 为空 |
 | 19 | 重规划 | `POST /api/projects/{id}/plans/replan` | 新 version，已完成任务带 `source_task_id` 保留 | `version=2`，stage 0 以 done 继承 |
 | 20 | 反向交接 | `POST /api/projects/{id}/handoff/draft` | 200，草稿 disposition 由进度推得 | `disposition=continuable` |
+
+## 上传实测
+
+`POST /api/projects/{id}/uploads`（multipart，字段名 `files`）在一次真实请求里的表现：
+
+```text
+请求：notes.md + secret.md + payload.exe + empty.md + ../../escape.md
+201  files    [notes.md=active, secret.md=restricted, escape.md=active]
+     rejected [payload.exe=unsupported_extension, empty.md=empty_file]
+     assets=3 chunks=2 restricted=1
+```
+
+逐项核对到的行为：
+
+- **文件名只取 leaf name**：`../../escape.md` 落成 `escape.md`，暂存目录是
+  `data/uploads/<project_id>/`，被 `.gitignore` 的 `/data/*` 覆盖。
+- **受限不等于失败**：`secret.md` 命中 `api_secret`，标 `restricted` 落盘但**不进索引**，
+  检索与问答都读不到它——`payload.exe` 才是被拒收的那一个。
+- **逐个拒绝**：一个坏文件不影响同批好文件入库；拒绝原因是稳定 token
+  （`unsupported_extension` / `too_large` / `binary_content` / `empty_file` / `invalid_name` / `unreadable`），
+  中文提示在前端映射。
+- **同名重传不重复入库**：再传一次 `notes.md` 后 `assets` 仍是 3、`notes.md` 只有 1 份，
+  但内容已更新——随后的问答返回的是 v2 正文，证明走的是同一个 asset 的覆盖路径。
+- **超过 20 个文件**：整体 422 `upload_rejected`，不做部分接收。
+- **上传后即可检索提问**：`学习率 缓存` 命中 `notes.md` / `escape.md`，
+  问答带 2 条引用（离线确定性模型，摘录原文并标注未做推理）。
+
+> 上传接口与其他业务接口一样**没有登录认证**，靠的是后端只监听 `127.0.0.1`。
+> 不要用 `--host 0.0.0.0` 把它暴露到局域网或公网。
 
 ## 规格 24.3 的逐条验收
 

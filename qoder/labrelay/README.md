@@ -14,7 +14,7 @@ React 前端、示例与端到端验收、运行与验证文档）已落地；�
 `site/` 目前只是占位目录。
 
 ```text
-后端  478 passed, 4 skipped（skipped 是需要真实 seekdb 的集成测试）
+后端  486 passed, 4 skipped（skipped 是需要真实 seekdb 的集成测试）
 前端  tsc --noEmit 与 vite build 均通过
 实跑  离线端到端 HTTP 冒烟全绿；浏览器完成建项目→导入→检索→交接→测评→路径→推进→问答
 seekdb  4 项集成测试连本地容器通过（2026-10-29）
