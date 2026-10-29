@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 
 from labrelay.api.deps import ensure_assessment, ensure_project, get_handoff_service, get_service
 from labrelay.api.errors import (
@@ -32,6 +32,7 @@ from labrelay.api.errors import (
     REPLAN_NOT_ALLOWED,
     TASK_NOT_FOUND,
     TASK_UPDATE_REJECTED,
+    UPLOAD_REJECTED,
     ApiError,
     request_id_of,
 )
@@ -59,6 +60,11 @@ from labrelay.application.services import (
     LabRelayService,
 )
 from labrelay.context.powercontext import PowerContextUnavailableError
+from labrelay.importers.uploads import (
+    MAX_UPLOAD_FILES,
+    stage_uploads,
+    staging_directory,
+)
 from labrelay.learning.progress import (
     ILLEGAL_TRANSITION,
     NoActivePlanError,
@@ -159,6 +165,73 @@ def build_router() -> APIRouter:
             )
             raise _import_refused(path) from None
         return dict(result)
+
+    @router.post("/projects/{project_id}/uploads", status_code=201)
+    async def upload_files(
+        project_id: str,
+        files: Annotated[list[UploadFile], File(description="Files to stage and import")],
+        service: ServiceDep,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Stage browser uploads, then run the same import path as a server directory.
+
+        The staged directory is per project, so a later upload of the same file name replaces
+        the earlier one and the asset is updated in place. Rejected files are reported by name
+        and reason, never by content, and a request that stages nothing is a 422.
+        """
+        project = await ensure_project(service, project_id)
+        if len(files) > MAX_UPLOAD_FILES:
+            raise ApiError(
+                422,
+                UPLOAD_REJECTED,
+                f"Upload at most {MAX_UPLOAD_FILES} files in one request.",
+                {"max_files": MAX_UPLOAD_FILES},
+            )
+
+        staged, rejected = await stage_uploads(project.id, files)
+        if not staged:
+            raise ApiError(
+                422,
+                UPLOAD_REJECTED,
+                "No uploaded file could be imported.",
+                {"rejected": [{"name": item.name, "reason": item.reason} for item in rejected]},
+            )
+
+        directory = staging_directory(project.id)
+        try:
+            result = await service.import_project_files(project.id, directory)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "upload import failed operation=upload_files request_id=%s project_id=%s "
+                "exception_class=%s",
+                request_id_of(request),
+                project.id,
+                type(exc).__name__,
+            )
+            raise ApiError(
+                422,
+                UPLOAD_REJECTED,
+                "The uploaded files could not be imported.",
+                {"project_id": project.id},
+            ) from None
+
+        # The import result counts assets, not files; the UI shows one badge per uploaded file,
+        # so the asset's own status (active / restricted / failed) is read back by staged path.
+        assets = await service.repository.list_assets(project.id)
+        asset_status = {asset.uri: asset.status for asset in assets}
+
+        return {
+            **result,
+            "files": [
+                {
+                    "name": item.name,
+                    "size": item.size,
+                    "status": asset_status.get(str(item.path.resolve()), "imported"),
+                }
+                for item in staged
+            ],
+            "rejected": [{"name": item.name, "reason": item.reason} for item in rejected],
+        }
 
     @router.get("/projects/{project_id}/assets")
     async def list_assets(project_id: str, service: ServiceDep) -> list[dict[str, Any]]:

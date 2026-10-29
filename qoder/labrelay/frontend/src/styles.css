@@ -142,3 +142,92 @@ pre {
   padding: 12px;
   white-space: pre-wrap;
 }
+
+.muted {
+  color: #5b6678;
+  font-size: 14px;
+}
+
+.dropzone {
+  background: #f8fbff;
+  border: 2px dashed #b9c6dc;
+  border-radius: 10px;
+  padding: 22px;
+  text-align: center;
+}
+
+.dropzone.dragging {
+  background: #eef4ff;
+  border-color: #1f5eff;
+}
+
+.dropzone p {
+  color: #3f4a5c;
+  margin: 0 0 12px;
+}
+
+.file-picker {
+  background: #1f5eff;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-block;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+
+.file-picker input {
+  display: none;
+}
+
+.file-list {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+}
+
+.file-list li {
+  align-items: center;
+  border-top: 1px solid #e8edf5;
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.file-list li > span:first-child {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.file-list small {
+  color: #6b7688;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.import-summary {
+  margin-top: 12px;
+}
+
+.citation-list ul {
+  list-style: none;
+  padding: 0;
+}
+
+.citation-list li {
+  border-top: 1px solid #e8edf5;
+  padding: 8px 0;
+}
+
+.citation-list p {
+  margin: 4px 0 0;
+}
+
+.answer {
+  background: #f4f8ff;
+  border-left: 3px solid #1f5eff;
+  padding: 10px 12px;
+}

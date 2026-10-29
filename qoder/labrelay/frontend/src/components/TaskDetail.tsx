@@ -25,7 +25,7 @@ export function TaskDetail({ task, onUpdate }: Props) {
 
   return (
     <section className="card">
-      <h2>7. 任务详情</h2>
+      <h2>8. 任务详情</h2>
       <h3>{task.title}</h3>
       <p>{task.objective}</p>
       <p>

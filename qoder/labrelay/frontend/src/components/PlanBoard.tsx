@@ -20,7 +20,7 @@ export function PlanBoard({ plan, selectedTaskId, onSelect }: Props) {
   const stages = [...new Set(plan.tasks.map((task) => task.stage))].sort((a, b) => a - b);
   return (
     <section className="card">
-      <h2>6. 学习路径 v{plan.version}</h2>
+      <h2>7. 学习路径 v{plan.version}</h2>
       {stages.map((stage) => (
         <div key={stage} className="stage">
           <h3>阶段 {stage}</h3>

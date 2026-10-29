@@ -111,13 +111,15 @@ def test_asset_with_secret_is_restricted(tmp_path: Path) -> None:
 
 def test_iter_importable_files_skips_excluded_dirs_oversized_and_unsupported(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(assets_module, "MAX_FILE_BYTES", 4096)
     leak = tmp_path / ".venv" / "site-packages" / "leak.py"
     leak.parent.mkdir(parents=True)
     leak.write_text("api_key = 'leaked-value'\n", encoding="utf-8")
 
     huge = tmp_path / "huge.md"
-    huge.write_text("# log\n" + ("x" * 40 + "\n") * 30_000, encoding="utf-8")
+    huge.write_text("# log\n" + ("x" * 40 + "\n") * 120, encoding="utf-8")
 
     (tmp_path / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     wanted = tmp_path / "notes.md"
@@ -207,9 +209,7 @@ def test_chunk_asset_uses_line_ranges_for_code(tmp_path: Path) -> None:
 def test_chunk_asset_redacts_credentials_before_indexing(tmp_path: Path) -> None:
     code = tmp_path / "train.py"
     code.write_text(
-        "api_key=super-secret-value\n"
-        "password=another-secret-value\n"
-        "def train():\n    return 1\n",
+        "api_key=super-secret-value\npassword=another-secret-value\ndef train():\n    return 1\n",
         encoding="utf-8",
     )
 
@@ -392,9 +392,7 @@ async def test_import_directory_persists_assets_and_indexes_chunks(tmp_path: Pat
     assert search_engine.calls == 1
     assert len(search_engine.chunks) == result["chunks"]
     assert all(chunk.asset_id in repository.assets for chunk in search_engine.chunks.values())
-    assert all(
-        "super-secret-value" not in chunk.content for chunk in search_engine.chunks.values()
-    )
+    assert all("super-secret-value" not in chunk.content for chunk in search_engine.chunks.values())
 
 
 async def test_import_directory_does_not_index_restricted_assets(tmp_path: Path) -> None:
@@ -494,14 +492,18 @@ async def test_import_directory_survives_unreadable_files_after_partial_persiste
 async def test_import_directory_counts_and_logs_skipped_files(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The production ceiling is 10 MiB; lowering it keeps this fixture small while still
+    # exercising the same ``too_large`` branch.
+    monkeypatch.setattr(assets_module, "MAX_FILE_BYTES", 4096)
     keep = tmp_path / "README.md"
     keep.write_text("# ok\nkeep me\n", encoding="utf-8")
     (tmp_path / "wandb").mkdir()
     (tmp_path / "wandb" / "run.md").write_text("# offline run\n", encoding="utf-8")
     (tmp_path / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (tmp_path / "raw.md").write_bytes(b"# raw\x00\x01\x02")
-    (tmp_path / "huge.md").write_text("# log\n" + ("x" * 40 + "\n") * 30_000, encoding="utf-8")
+    (tmp_path / "huge.md").write_text("# log\n" + ("x" * 40 + "\n") * 120, encoding="utf-8")
 
     repository = FakeRepository()
     search_engine = FakeSearchEngine()

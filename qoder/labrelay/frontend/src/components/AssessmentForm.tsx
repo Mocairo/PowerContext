@@ -45,7 +45,7 @@ export function AssessmentForm({ projectId, disabled = false, onGenerated }: Pro
 
   return (
     <section className="card">
-      <h2>5. 新人测评与学习路径</h2>
+      <h2>6. 新人测评与学习路径</h2>
       <form onSubmit={submit}>
         <label>
           Python 基础

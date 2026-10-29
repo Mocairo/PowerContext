@@ -8,11 +8,25 @@ import type {
   LearningTask,
   Project,
   SearchHit,
+  UploadResult,
 } from "./types";
 
 interface ErrorEnvelope {
   error?: { code?: string; message?: string; details?: unknown };
   request_id?: string;
+}
+
+async function fail(response: Response): Promise<never> {
+  let detail = `HTTP ${response.status}`;
+  let requestId = "";
+  try {
+    const envelope = (await response.json()) as ErrorEnvelope;
+    detail = envelope.error?.message ?? detail;
+    requestId = envelope.request_id ?? "";
+  } catch {
+    detail = `${detail}: ${await response.text()}`;
+  }
+  throw new Error(requestId ? `${detail} (request ${requestId})` : detail);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -23,18 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    let requestId = "";
-    try {
-      const envelope = (await response.json()) as ErrorEnvelope;
-      detail = envelope.error?.message ?? detail;
-      requestId = envelope.request_id ?? "";
-    } catch {
-      detail = `${detail}: ${await response.text()}`;
-    }
-    throw new Error(requestId ? `${detail} (request ${requestId})` : detail);
-  }
+  if (!response.ok) await fail(response);
   return (await response.json()) as T;
 }
 
@@ -46,6 +49,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+  uploadFiles: async (projectId: string, files: File[]): Promise<UploadResult> => {
+    const form = new FormData();
+    files.forEach((file) => form.append("files", file));
+    // No Content-Type header: the browser must add the multipart boundary itself.
+    const response = await fetch(`/api/projects/${projectId}/uploads`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) await fail(response);
+    return (await response.json()) as UploadResult;
+  },
   searchProject: (projectId: string, query: string, assetKinds: string[], limit: number) =>
     request<{ hits: SearchHit[] }>(`/api/projects/${projectId}/search`, {
       method: "POST",

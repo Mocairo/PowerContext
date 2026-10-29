@@ -15,6 +15,7 @@ dependencies = [
   "powercontext[client]>=1.4.1,<2",
   "pyseekdb>=1.4,<2",
   "anyio>=4.4,<5",
+  "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]

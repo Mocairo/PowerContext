@@ -122,3 +122,19 @@ export interface ImportResult {
   restricted: number;
   restricted_reasons: Record<string, string[]>;
 }
+
+export interface UploadedFile {
+  name: string;
+  size: number;
+  status: "active" | "restricted" | "failed" | "imported";
+}
+
+export interface RejectedFile {
+  name: string;
+  reason: string;
+}
+
+export interface UploadResult extends ImportResult {
+  files: UploadedFile[];
+  rejected: RejectedFile[];
+}

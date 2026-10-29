@@ -49,7 +49,7 @@ export function HandoffPanel({ projectId, onConfirmed }: Props) {
 
   return (
     <section className="card">
-      <h2>4. 学长交接</h2>
+      <h2>5. 学长交接</h2>
       <form onSubmit={prepare}>
         <label>
           交接目标

@@ -630,6 +630,7 @@ def test_the_openapi_document_lists_the_project_and_handoff_surface() -> None:
     assert {key for key in paths if key.startswith("/api")} == {
         "/api/projects",
         "/api/projects/{project_id}/imports",
+        "/api/projects/{project_id}/uploads",
         "/api/projects/{project_id}/assets",
         "/api/projects/{project_id}/search",
         "/api/projects/{project_id}/questions",

@@ -8,6 +8,7 @@ import { ProjectForm } from "./components/ProjectForm";
 import { QuestionPanel } from "./components/QuestionPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { TaskDetail } from "./components/TaskDetail";
+import { UploadPanel } from "./components/UploadPanel";
 import type {
   ImportResult,
   LearningContext,
@@ -90,8 +91,13 @@ export default function App() {
             <small>Scope：{project.project_scope_id}</small>
           </section>
 
-          <section className="card">
-            <h2>2. 导入资料目录</h2>
+          <UploadPanel projectId={project.id} onImported={setImportResult} />
+
+          <details className="card advanced">
+            <summary>高级：从服务器本地路径导入</summary>
+            <p className="muted">
+              适合导入仓库自带的示例资料。路径相对后端进程工作目录解析，不使用浏览器上传。
+            </p>
             <div className="row">
               <label>
                 本地路径
@@ -111,9 +117,10 @@ export default function App() {
                 {importResult.restricted}。
               </p>
             )}
-          </section>
+          </details>
 
           <SearchPanel projectId={project.id} disabled={!importResult} />
+          <QuestionPanel projectId={project.id} disabled={!importResult} />
           <HandoffPanel
             projectId={project.id}
             onConfirmed={() => {
@@ -154,7 +161,6 @@ export default function App() {
               onUpdate={updateTask}
             />
           )}
-          <QuestionPanel projectId={project.id} />
           {context && (
             <section className="card">
               <h2>学习进度</h2>
