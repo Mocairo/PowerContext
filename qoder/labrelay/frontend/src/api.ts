@@ -8,6 +8,8 @@ import type {
   LearningTask,
   Project,
   SearchHit,
+  AnswerResponse,
+  RuntimeStatus,
   UploadResult,
 } from "./types";
 
@@ -104,8 +106,9 @@ export const api = {
       { method: "POST" }
     ),
   askQuestion: (projectId: string, question: string) =>
-    request<{ answer: string; citations: import("./types").Citation[] }>(
-      `/api/projects/${projectId}/questions`,
-      { method: "POST", body: JSON.stringify({ question }) }
-    ),
+    request<AnswerResponse>(`/api/projects/${projectId}/questions`, {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
+  runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
 };

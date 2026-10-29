@@ -138,3 +138,18 @@ export interface UploadResult extends ImportResult {
   files: UploadedFile[];
   rejected: RejectedFile[];
 }
+
+export interface RuntimeStatus {
+  backend: string;
+  context: string;
+  model: string;
+  model_provider: string;
+}
+
+export interface AnswerResponse {
+  answer: string;
+  citations: Citation[];
+  retrieved: Citation[];
+  context_used: boolean;
+  runtime: RuntimeStatus;
+}

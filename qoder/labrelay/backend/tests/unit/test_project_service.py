@@ -446,7 +446,8 @@ async def test_create_project_writes_the_initial_decision_to_the_project_scope()
         (
             project.project_scope_id,
             "decision",
-            f"项目 {project.title} 已创建，开始建立可追溯交接资料空间。",
+            f"项目《{project.title}》（Deep Learning）已创建，目标：Reproduce experiment。"
+            "开始建立可追溯交接资料空间。",
             "project initialization",
         )
     ]

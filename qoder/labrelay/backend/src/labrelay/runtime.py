@@ -1,12 +1,24 @@
 """Production composition root for the LabRelay backend.
 
 The factory builds one immutable set of dependencies and hands it to the app. The API layer never
-constructs a repository, engine or gateway itself, so swapping the in-memory demo for seekdb,
-PowerContext and the Qoder/OpenAI gateway is a configuration choice rather than a route change.
+constructs a repository, engine or gateway itself, so swapping storage, context or model is an
+environment choice rather than a route change.
+
+Three switches compose the stack independently:
+
+- ``LABRELAY_REPOSITORY``: ``memory`` or ``seekdb``
+- ``LABRELAY_CONTEXT``: ``memory`` or ``powercontext``
+- ``LABRELAY_MODEL_PROVIDER``: ``deterministic``, ``openai_compat`` or ``qoder``
+
+Their defaults follow the run mode: fake dependencies stay fully in-memory, the real mode keeps
+seekdb, PowerContext and the OpenAI-compatible gateway. The switches exist because the useful
+local combination is not all-fake or all-real — a reviewer may want real PowerContext context and
+a real Qwen model on top of an in-memory store.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from labrelay.application.handoff import HandoffService
@@ -21,6 +33,10 @@ from labrelay.persistence.seekdb import SeekdbRepository
 from labrelay.retrieval.in_memory import InMemorySearchEngine
 from labrelay.retrieval.seekdb import SeekdbSearchEngine
 
+REPOSITORY_KINDS = {"memory", "seekdb"}
+CONTEXT_KINDS = {"memory", "powercontext"}
+MODEL_KINDS = {"deterministic", "openai_compat", "qoder"}
+
 
 @dataclass(slots=True)
 class Runtime:
@@ -33,17 +49,54 @@ class Runtime:
     context: object
 
 
+def _choice(name: str, default: str) -> str:
+    value = (os.getenv(name) or default).strip().lower()
+    return value or default
+
+
+def _build_model(kind: str, config: LabRelayConfig):
+    if kind == "deterministic":
+        return DeterministicModelGateway(config.embedding.dimensions or 2)
+    if kind == "openai_compat":
+        return OpenAICompatModelGateway.from_config(config)
+    if kind == "qoder":
+        from labrelay.model.qoder_agent import QoderAgentModelGateway
+
+        return QoderAgentModelGateway.from_config(config)
+    raise ValueError(f"LABRELAY_MODEL_PROVIDER must be one of {sorted(MODEL_KINDS)}, got {kind!r}")
+
+
+def _build_repository(kind: str, config: LabRelayConfig):
+    if kind == "memory":
+        return InMemoryRepository()
+    if kind == "seekdb":
+        return SeekdbRepository.from_config(config)
+    raise ValueError(f"LABRELAY_REPOSITORY must be one of {sorted(REPOSITORY_KINDS)}, got {kind!r}")
+
+
+def _build_context(kind: str, config: LabRelayConfig):
+    if kind == "memory":
+        return InMemoryContextGateway()
+    if kind == "powercontext":
+        return PowerContextService.from_config(config)
+    raise ValueError(f"LABRELAY_CONTEXT must be one of {sorted(CONTEXT_KINDS)}, got {kind!r}")
+
+
 def build_runtime(config: LabRelayConfig, *, fake_dependencies: bool = False) -> Runtime:
-    if fake_dependencies:
-        repository = InMemoryRepository()
-        model = DeterministicModelGateway(config.embedding.dimensions or 2)
-        engine = InMemorySearchEngine(model)
-        context = InMemoryContextGateway()
-    else:
-        repository = SeekdbRepository.from_config(config)
-        model = OpenAICompatModelGateway.from_config(config)
-        engine = SeekdbSearchEngine.from_config(config, model=model)
-        context = PowerContextService.from_config(config)
+    repository_kind = _choice("LABRELAY_REPOSITORY", "memory" if fake_dependencies else "seekdb")
+    context_kind = _choice("LABRELAY_CONTEXT", "memory" if fake_dependencies else "powercontext")
+    model_kind = _choice(
+        "LABRELAY_MODEL_PROVIDER", "deterministic" if fake_dependencies else "openai_compat"
+    )
+
+    model = _build_model(model_kind, config)
+    repository = _build_repository(repository_kind, config)
+    engine = (
+        InMemorySearchEngine(model)
+        if repository_kind == "memory"
+        else SeekdbSearchEngine.from_config(config, model=model)
+    )
+    context = _build_context(context_kind, config)
 
     service = LabRelayService(
         repository=repository,
@@ -67,20 +120,22 @@ def build_service(config: LabRelayConfig, *, fake_dependencies: bool = False) ->
 
 
 def describe(service: LabRelayService) -> dict[str, str]:
-    """Name the dependency set a service is actually wired to, for the demo panel's status call.
-
-    The panel has to say which stack it is talking to, and this module is the only one allowed to
-    know the concrete classes — the API layer must not import them to find out.
-    """
+    """Name the dependency set a service is actually wired to, for the workbench status strip."""
+    model = service.model
+    class_name = type(model).__name__
+    if class_name == "QoderAgentModelGateway":
+        provider = "qoder"
+    elif isinstance(model, OpenAICompatModelGateway):
+        provider = "openai_compat"
+    else:
+        provider = "deterministic"
     return {
         "backend": "seekdb" if isinstance(service.repository, SeekdbRepository) else "memory",
         "context": "powercontext" if isinstance(service.context, PowerContextService) else "memory",
-        "model": getattr(service.model, "model", None) or type(service.model).__name__,
-        "model_provider": (
-            "openai_compat"
-            if isinstance(service.model, OpenAICompatModelGateway)
-            else "deterministic"
-        ),
+        "model": getattr(model, "model", None)
+        or getattr(model, "generation_model", None)
+        or class_name,
+        "model_provider": provider,
     }
 
 

@@ -71,6 +71,7 @@ from labrelay.learning.progress import (
     TaskTransitionRejected,
 )
 from labrelay.planning.validator import PlanValidationError
+from labrelay.runtime import describe
 
 logger = logging.getLogger("labrelay.api.routes")
 
@@ -233,6 +234,10 @@ def build_router() -> APIRouter:
             "rejected": [{"name": item.name, "reason": item.reason} for item in rejected],
         }
 
+    @router.get("/runtime/status")
+    async def runtime_status(service: ServiceDep) -> dict[str, str]:
+        return describe(service)
+
     @router.get("/projects/{project_id}/assets")
     async def list_assets(project_id: str, service: ServiceDep) -> list[dict[str, Any]]:
         project = await ensure_project(service, project_id)
@@ -260,6 +265,9 @@ def build_router() -> APIRouter:
         return {
             "answer": response.answer,
             "citations": [citation.model_dump(mode="json") for citation in response.citations],
+            "retrieved": [citation.model_dump(mode="json") for citation in response.retrieved],
+            "context_used": response.context_used,
+            "runtime": describe(service),
         }
 
     @router.post("/projects/{project_id}/assessments", status_code=201)
