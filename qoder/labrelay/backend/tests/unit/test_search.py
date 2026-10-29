@@ -462,6 +462,25 @@ def test_excerpt_is_capped_at_the_configured_length() -> None:
     assert excerpt.startswith("baseline ")
 
 
+def test_chinese_query_matches_cjk_bigrams_lexically() -> None:
+    """A Chinese query has to rank on the lexical channel, not on the hash embedding alone."""
+    note = TRAIN.model_copy(update={"id": "asset-note", "kind": "note", "title": "debugging.md"})
+    config = TRAIN.model_copy(
+        update={"id": "asset-config", "kind": "config", "title": "baseline.yaml"}
+    )
+    note_chunk = asset_chunk(
+        asset=note, chunk_id="asset-note:cjk", content="旧数据缓存会污染数据划分"
+    )
+    config_chunk = asset_chunk(asset=config, chunk_id="asset-config:cjk", content="学习率消融配置")
+    engine = InMemorySearchEngine(model=ScriptedModel())
+
+    run(engine.upsert_chunks([note_chunk, config_chunk], [note, config]))
+    hits = search(engine, "project-1", "数据缓存")
+
+    assert hits[0].citation.title == "debugging.md"
+    assert hits[0].score > 0
+
+
 # --- configuration reconciliation --------------------------------------------
 
 

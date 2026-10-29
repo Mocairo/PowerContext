@@ -33,7 +33,10 @@ ACTIVE_STATUS = "active"
 
 # Identifiers, paths and headings all reach the lexical channel, so ``run_baseline()``
 # matches the query term ``baseline`` rather than the single token ``run_baseline():``.
+# CJK runs are tokenized into characters and bigrams so a Chinese query does not depend
+# on the hash embedding alone; the bigrams mirror seekdb's ``ngram`` full-text analyzer.
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_CJK_PATTERN = re.compile(r"[㐀-䶿一-鿿]+")
 
 logger = logging.getLogger("labrelay.retrieval.in_memory")
 
@@ -46,7 +49,12 @@ class IndexedChunk:
 
 
 def _tokens(text: str) -> set[str]:
-    return set(_TOKEN_PATTERN.findall(text.lower()))
+    lowered = text.lower()
+    tokens = set(_TOKEN_PATTERN.findall(lowered))
+    for run in _CJK_PATTERN.findall(lowered):
+        tokens.update(run)
+        tokens.update(run[index : index + 2] for index in range(len(run) - 1))
+    return tokens
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
