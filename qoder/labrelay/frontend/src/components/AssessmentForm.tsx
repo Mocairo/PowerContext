@@ -93,6 +93,7 @@ export function AssessmentForm({ projectId, disabled = false, onGenerated }: Pro
           {busy ? "生成中…" : "提交测评并生成路径"}
         </button>
       </form>
+      {disabled && <p className="muted">先在上一步「学长交接」里确认并提交 Handoff，这个按钮才会启用。</p>}
       {message && <p role="status">{message}</p>}
     </section>
   );

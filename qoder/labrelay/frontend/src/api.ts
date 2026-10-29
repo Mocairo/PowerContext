@@ -2,6 +2,7 @@ import type {
   Assessment,
   HandoffDraft,
   HandoffPreview,
+  HandoffView,
   ImportResult,
   LearningContext,
   LearningPlan,
@@ -73,10 +74,12 @@ export const api = {
       body: JSON.stringify(draft),
     }),
   confirmHandoff: (projectId: string, draftId: string) =>
-    request<{ handoff_ref: string; scope_id: string }>(
-      `/api/projects/${projectId}/handoff/confirm`,
-      { method: "POST", body: JSON.stringify({ draft_id: draftId }) }
-    ),
+    request<HandoffView>(`/api/projects/${projectId}/handoff/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ draft_id: draftId }),
+    }),
+  getHandoff: (projectId: string) =>
+    request<HandoffView>(`/api/projects/${projectId}/handoff`),
   submitAssessment: (projectId: string, input: Omit<Assessment, "id" | "project_id">) =>
     request<Assessment>(`/api/projects/${projectId}/assessments`, {
       method: "POST",

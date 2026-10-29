@@ -153,3 +153,10 @@ export interface AnswerResponse {
   context_used: boolean;
   runtime: RuntimeStatus;
 }
+
+export interface HandoffView {
+  project_id: string;
+  scope_id: string;
+  handoff_ref: string;
+  content: Record<string, unknown> | null;
+}

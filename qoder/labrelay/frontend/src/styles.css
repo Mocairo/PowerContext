@@ -397,3 +397,46 @@ button.chip {
     grid-template-columns: 1fr;
   }
 }
+
+.draft-view {
+  background: #fbfcff;
+  border: 1px solid #dde3ec;
+  border-radius: 10px;
+  margin-top: 14px;
+  padding: 12px 14px;
+}
+
+.draft-view summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.draft-view.confirmed {
+  background: #f4fbf6;
+  border-color: #9fd3b4;
+}
+
+.draft-content {
+  margin-top: 10px;
+}
+
+.state-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+}
+
+.state-list li {
+  background: #fff;
+  border-left: 3px solid #1f5eff;
+  font-size: 14px;
+  padding: 4px 10px;
+}
+
+.state-list small {
+  color: #5b6678;
+  display: block;
+  font-size: 12px;
+}
