@@ -1,0 +1,37 @@
+# 学习率消融配置（不是 baseline，不要用它复现历史指标）
+#
+# baseline 用的是 configs/baseline.yaml；这份是缺实验段里「学习率消融」的起点配置。
+# 历史只跑过 1.0e-4 和 1.0e-3 两个端点（见 experiments/metrics.csv），中间点没有记录。
+
+project: aurora-anomaly-detection
+experiment_name: lr_ablation_2e-4
+derived_from: baseline_v3_seed2026
+
+data:
+  root: /data/aurora
+  version: v3
+  train_ratio: 0.8
+  val_ratio: 0.2
+  require_clean_cache: true
+
+training:
+  entry: code/train.py
+  # 唯一相对 baseline 的改变就是学习率；其余项必须保持一致，否则消融不成立
+  learning_rate: 2.0e-4
+  batch_size: 128
+  epochs: 40
+  seed: 2026
+  optimizer: adamw
+  weight_decay: 0.01
+
+evaluation:
+  entry: code/evaluate.py
+  threshold: 0.5
+  metrics:
+    - auroc
+    - f1
+
+ablation:
+  sweep: [1.0e-4, 2.0e-4, 3.0e-4, 1.0e-3]
+  already_recorded: ["1.0e-4", "1.0e-3"]
+  expected_report: 每个点都写进 experiments/metrics.csv，run_key 用 baseline_lr_<值>

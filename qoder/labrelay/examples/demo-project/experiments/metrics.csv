@@ -1,0 +1,7 @@
+run_key,model,learning_rate,seed,val_auroc,val_f1,test_auroc,test_f1,notes
+baseline,residual-forecaster,0.0003,2026,0.9210,0.8530,0.9120,0.8450,clean cache; data v3; 40 epochs
+baseline_lr_1e-3,residual-forecaster,0.0010,2026,0.8870,0.8120,0.8790,0.8010,unstable in the last 10 epochs
+baseline_lr_1e-4,residual-forecaster,0.0001,2026,0.8410,0.7620,0.8350,0.7540,not converged within 40 epochs
+baseline_stale_cache,residual-forecaster,0.0003,2026,0.8800,0.7990,0.8740,0.7900,resample skipped by old cache
+baseline_seed_2027,residual-forecaster,0.0003,2027,,,,,not run yet
+baseline_seed_2028,residual-forecaster,0.0003,2028,,,,,not run yet
