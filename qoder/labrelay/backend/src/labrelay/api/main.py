@@ -101,7 +101,10 @@ def create_default_app() -> FastAPI:
     """Build the app from the repository's YAML and environment for uvicorn."""
     project_root = Path(__file__).resolve().parents[4]
     _load_dotenv(project_root / ".env")
-    return create_app(load_app_config(project_root), fake_dependencies=False)
+    return create_app(
+        load_app_config(project_root),
+        fake_dependencies=os.getenv("LABRELAY_USE_FAKE_DEPS") == "1",
+    )
 
 
 def _load_dotenv(path: Path) -> None:

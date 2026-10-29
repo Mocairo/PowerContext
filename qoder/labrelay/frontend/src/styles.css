@@ -1,0 +1,144 @@
+:root {
+  color: #1d2433;
+  background: #f4f6f9;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  line-height: 1.55;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 1040px;
+  padding: 24px;
+}
+
+header h1 {
+  margin-bottom: 4px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #dde3ec;
+  border-radius: 10px;
+  margin: 16px 0;
+  padding: 18px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin: 10px 0;
+}
+
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  display: block;
+  font: inherit;
+  margin-top: 4px;
+  padding: 8px;
+  width: 100%;
+}
+
+textarea {
+  min-height: 80px;
+}
+
+button {
+  background: #1f5eff;
+  border: 0;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  margin-right: 8px;
+  padding: 8px 14px;
+}
+
+button:disabled {
+  background: #9aa8bd;
+  cursor: not-allowed;
+}
+
+button.link {
+  background: transparent;
+  color: #1f5eff;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.row {
+  align-items: end;
+  display: flex;
+  gap: 8px;
+}
+
+.row label {
+  flex: 1;
+}
+
+.results,
+.stage ul {
+  list-style: none;
+  padding: 0;
+}
+
+.results li {
+  border-top: 1px solid #e8edf5;
+  padding: 10px 0;
+}
+
+.stage li {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.stage li.selected {
+  background: #eef3ff;
+}
+
+.badge {
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.badge.done {
+  background: #1c8b57;
+}
+.badge.in_progress {
+  background: #1f5eff;
+}
+.badge.blocked {
+  background: #b63b3b;
+}
+.badge.needs_material {
+  background: #ad6b00;
+}
+.badge.locked {
+  background: #6d7787;
+}
+.badge.skipped {
+  background: #786b9e;
+}
+.badge.todo {
+  background: #3a8790;
+}
+
+.error {
+  color: #b42318;
+}
+
+pre {
+  background: #f7f9fc;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}

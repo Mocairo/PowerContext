@@ -5,6 +5,9 @@ payload — each stage carries its own ``required_evidence`` kinds, so this fake
 the requirement from the request instead of hard-coding a stage table or a canned
 ``expected_plan`` answer.
 
+A question payload takes the same offline route: instead of raising, the stand-in quotes the
+retrieved excerpts, so a demo without a model key still returns an evidence-backed answer.
+
 Task ids are namespaced by the plan they are generated for (falling back to the assessment, then
 to a digest of the request): two plan versions of one project must never write onto the same
 ``learning_task.id`` primary key, and a prerequisite chain has to point at the tasks of its own
@@ -22,6 +25,14 @@ ACTIVE_TERMS = ("baseline", "训练", "实验")
 
 #: ``learning_task.id`` is a VARCHAR(64); leaving room for the ``-stage-<n>`` suffix.
 MAX_NAMESPACE_CHARS = 48
+
+#: How many hits the offline answer quotes; more would bury the caller in raw text.
+MAX_QUOTED_HITS = 3
+
+#: Says the text is untrusted project material, not a model conclusion, so an excerpt that
+#: reads like an instruction is not mistaken for one.
+OFFLINE_ANSWER_PREFIX = "以下为项目资料原文摘录（离线确定性模型，未做推理）："
+NO_EVIDENCE_ANSWER = "无法从项目资料确认。"
 
 
 def _named(value: object) -> str:
@@ -67,6 +78,9 @@ class DeterministicModelGateway:
     async def generate_json(
         self, system_prompt: str, user_payload: dict[str, object]
     ) -> dict[str, object]:
+        if isinstance(user_payload, dict) and "question" in user_payload:
+            return self._answer_question(user_payload)
+
         stages = user_payload.get("stages") if isinstance(user_payload, dict) else None
         if not isinstance(stages, list):
             raise ValueError("model payload must contain a 'stages' list")
@@ -109,3 +123,33 @@ class DeterministicModelGateway:
             )
             previous_id = stage_id
         return {"tasks": tasks}
+
+    def _answer_question(self, user_payload: dict[str, object]) -> dict[str, object]:
+        """Echo the retrieved excerpts, because an offline demo has no model to reason with.
+
+        The answer is quoted source text, never a conclusion, and ``used_asset_ids`` only names
+        assets that were actually in the evidence, so :mod:`labrelay.application.qa` can still
+        attach citations the caller is allowed to see.
+        """
+        evidence = user_payload.get("evidence")
+        hits = evidence if isinstance(evidence, list) else []
+        quoted: list[str] = []
+        used: list[str] = []
+        for item in hits[:MAX_QUOTED_HITS]:
+            citation = item.get("citation") if isinstance(item, dict) else None
+            if not isinstance(citation, dict):
+                continue
+            asset_id = citation.get("asset_id")
+            if not isinstance(asset_id, str) or not asset_id:
+                continue
+            title = str(citation.get("title") or asset_id)
+            excerpt = " ".join(str(citation.get("excerpt") or "").split())
+            quoted.append(f"《{title}》摘录：{excerpt}" if excerpt else f"《{title}》")
+            used.append(asset_id)
+        if not used:
+            return {"answer": NO_EVIDENCE_ANSWER, "sufficient": False, "used_asset_ids": []}
+        return {
+            "answer": f"{OFFLINE_ANSWER_PREFIX}" + "；".join(quoted),
+            "sufficient": True,
+            "used_asset_ids": used,
+        }

@@ -267,6 +267,62 @@ async def test_accepted_acknowledgement_without_confirmed_checks_is_422() -> Non
     assert silent_decline.status_code == 422
 
 
+async def test_in_memory_gateway_runs_the_full_handoff_workflow() -> None:
+    # The offline runtime wires HandoffService to InMemoryContextGateway, so the fake has to
+    # satisfy the same PowerContext payload shapes the real client sends; a fake that only
+    # implements scopes and notes turns the demo's "confirm handoff" button into a 500.
+    app, repository = build_app(InMemoryContextGateway())
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            prepared = await client.post("/api/projects/project-1/handoff/prepare", json=DRAFT)
+            draft_id = prepared.json()["draft_id"]
+
+            committed = await client.post(
+                "/api/projects/project-1/handoff/confirm", json={"draft_id": draft_id}
+            )
+            assert committed.status_code == 200
+            committed_body = committed.json()
+            assert committed_body["content"]["objective"] == "复现 baseline"
+            assert committed_body["content"]["disposition"] == "continuable"
+
+            fetched = await client.get("/api/projects/project-1/handoff")
+            assert fetched.status_code == 200
+            assert fetched.json()["content"] == committed_body["content"]
+
+            acknowledged = await client.post(
+                "/api/projects/project-1/handoff/acknowledge",
+                json={
+                    "receiver": "new-student",
+                    "receiver_checks": {
+                        "live_state": "confirmed",
+                        "capability": "confirmed",
+                        "authorization": "confirmed",
+                    },
+                },
+            )
+            assert acknowledged.status_code == 200
+            assert SourceReference.model_validate_json(acknowledged.json()["receipt_ref"])
+
+            outcome = await client.post(
+                "/api/projects/project-1/handoff/outcome",
+                json={
+                    "objective": "复现 baseline",
+                    "status": "succeeded",
+                    "summary": "指标一致",
+                    "observations": ["baseline 指标已核对"],
+                    "remaining_work": ["扩展实验"],
+                },
+            )
+            assert outcome.status_code == 200
+            assert outcome.json()["status"] == "recorded"
+
+    stored = await repository.get_project("project-1")
+    assert stored is not None
+    assert stored.handoff_ref == committed_body["handoff_ref"]
+    assert stored.handoff_receipt_ref == acknowledged.json()["receipt_ref"]
+
+
 async def test_handoff_errors_are_structured() -> None:
     app, _ = build_app()
     transport = httpx.ASGITransport(app=app)

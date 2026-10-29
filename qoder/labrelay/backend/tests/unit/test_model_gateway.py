@@ -863,3 +863,47 @@ def test_the_package_exposes_both_gateways() -> None:
 
     assert model_package.OpenAICompatModelGateway is OpenAICompatModelGateway
     assert model_package.DeterministicModelGateway is DeterministicModelGateway
+
+
+def question_payload(evidence: list[dict[str, object]]) -> dict[str, object]:
+    return {"question": "baseline 之前要注意什么？", "project_context": None, "evidence": evidence}
+
+
+def hit(asset_id: str, title: str, excerpt: str) -> dict[str, object]:
+    return {
+        "citation": {
+            "asset_id": asset_id,
+            "kind": "note",
+            "title": title,
+            "uri": f"notes/{title}",
+            "version": None,
+            "locator": {"line_start": 3},
+            "excerpt": excerpt,
+        },
+        "score": 0.9,
+    }
+
+
+async def test_deterministic_gateway_answers_from_the_retrieved_excerpt() -> None:
+    """With no model configured, the stand-in quotes evidence instead of failing the request."""
+    response = await DeterministicModelGateway().generate_json(
+        "system", question_payload([hit("note-1", "handoff.md", "先清理历史缓存再训练。")])
+    )
+
+    assert response["sufficient"] is True
+    assert response["used_asset_ids"] == ["note-1"]
+    assert "先清理历史缓存再训练。" in response["answer"]
+    assert "handoff.md" in response["answer"]
+
+
+async def test_deterministic_gateway_refuses_a_question_without_evidence() -> None:
+    response = await DeterministicModelGateway().generate_json("system", question_payload([]))
+
+    assert response["sufficient"] is False
+    assert response["used_asset_ids"] == []
+    assert "无法" in response["answer"]
+
+
+async def test_deterministic_gateway_rejects_a_payload_with_neither_stages_nor_question() -> None:
+    with pytest.raises(ValueError, match="stages"):
+        await DeterministicModelGateway().generate_json("system", {"nothing": True})
