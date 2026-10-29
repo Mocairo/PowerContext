@@ -216,3 +216,111 @@ async def test_initialize_upgrades_a_database_created_before_the_handoff_columns
     )
     await repository.save_project(project)
     assert await repository.get_project(project.id) == project
+
+
+OLD_ASSETS_SQL = """
+CREATE TABLE assets (
+  id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  uri TEXT NOT NULL,
+  checksum VARCHAR(128) NOT NULL,
+  version VARCHAR(255) NULL,
+  status VARCHAR(32) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_asset_location (project_id, uri(191), checksum)
+)
+"""
+
+OLD_EVENTS_SQL = """
+CREATE TABLE task_events (
+  id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  plan_id VARCHAR(64) NOT NULL,
+  task_id VARCHAR(64) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  payload_json TEXT NOT NULL,
+  occurred_at VARCHAR(64) NOT NULL,
+  PRIMARY KEY (id),
+  INDEX idx_events_task (task_id)
+)
+"""
+
+
+async def test_initialize_backfills_the_sequence_column_of_an_older_database() -> None:
+    """Ordered reads run on ``seq``, so a database predating that column fails on every read.
+
+    Found by running this suite against a live seekdb: the stored rows were fine, but
+    ``list_assets`` died with ``Unknown column 'seq' in 'order clause'``, which no offline fake
+    can report because the fake keeps rows in insertion order regardless of schema.
+    """
+    suffix = uuid4().hex[:8]
+    database = f"labrelay_seq_{suffix}"
+    config = _config().model_copy(update={"seekdb_database": database})
+    with closing(
+        pymysql.connect(
+            host=config.seekdb_host,
+            port=config.seekdb_port,
+            user=config.seekdb_user,
+            password=config.seekdb_password,
+            charset="utf8mb4",
+            cursorclass=DictCursor,
+        )
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4")
+            cursor.execute(f"USE `{database}`")
+            cursor.execute(OLD_ASSETS_SQL)
+            cursor.execute(OLD_EVENTS_SQL)
+        connection.commit()
+
+    repository = SeekdbRepository.from_config(config)
+    await repository.initialize()
+    await repository.initialize()
+
+    project_id = f"project-{suffix}"
+    for index in (1, 2, 3):
+        await repository.save_asset(
+            Asset(
+                id=f"asset-{suffix}-{index}",
+                project_id=project_id,
+                kind="code",
+                title=f"file{index}.py",
+                uri=f"/demo/{suffix}/file{index}.py",
+                checksum=f"sum-{suffix}-{index}",
+                version="deadbeef",
+                status="active",
+            )
+        )
+    for index in (1, 2):
+        await repository.append_event(
+            TaskEvent(
+                id=f"event-{suffix}-{index}",
+                project_id=project_id,
+                plan_id=f"plan-{suffix}",
+                task_id=f"task-{suffix}",
+                event_type="status_changed",
+                payload={"index": index},
+                occurred_at=f"2026-10-29T0{index}:00:00Z",
+            )
+        )
+
+    assets = await repository.list_assets(project_id)
+    assert [asset.title for asset in assets] == ["file1.py", "file2.py", "file3.py"]
+    events = await repository.list_events(project_id)
+    assert [event.id for event in events] == [f"event-{suffix}-1", f"event-{suffix}-2"]
+
+    with closing(
+        pymysql.connect(
+            host=config.seekdb_host,
+            port=config.seekdb_port,
+            user=config.seekdb_user,
+            password=config.seekdb_password,
+            charset="utf8mb4",
+            autocommit=True,
+        )
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP DATABASE `{database}`")

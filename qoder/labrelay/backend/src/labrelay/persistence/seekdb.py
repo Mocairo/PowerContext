@@ -33,6 +33,9 @@ _INTEGRITY_KEY = re.compile(r"for key '([^']+)'")
 DEFAULT_TENANT = "sys"
 CONNECT_TIMEOUT_SECONDS = 5
 READ_TIMEOUT_SECONDS = 10
+#: Startup-only. Backfilling an auto-increment ``seq`` onto an existing table is a table rewrite,
+#: measured at ~18s on a local seekdb, so it cannot share the 10s budget a normal query gets.
+DDL_TIMEOUT_SECONDS = 120
 # A concurrent replan can take the version between get_next_plan_version() and the save.
 _PLAN_VERSION_ATTEMPTS = 3
 
@@ -232,7 +235,9 @@ class SeekdbRepository:
         return True
 
     def _initialize_sync(self) -> None:
-        with closing(self._connect(with_database=False)) as connection:
+        with closing(
+            self._connect(with_database=False, statement_timeout=DDL_TIMEOUT_SECONDS)
+        ) as connection:
             try:
                 with connection.cursor() as cursor:
                     cursor.execute(
@@ -243,22 +248,26 @@ class SeekdbRepository:
                 connection.rollback()
                 raise
 
-        with closing(self._connect()) as connection:
+        with closing(self._connect(statement_timeout=DDL_TIMEOUT_SECONDS)) as connection:
             try:
                 with connection.cursor() as cursor:
                     for statement in _schema_statements():
                         cursor.execute(statement)
-                    for migration in (
-                        "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
-                        "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
-                    ):
-                        try:
-                            cursor.execute(migration)
-                        except pymysql.err.MySQLError as exc:
-                            # 1060 is "duplicate column": a database created by an older
-                            # schema already migrated, or by the current one outright.
-                            if exc.args[0] != 1060:
-                                raise
+                    # Applied only when the column is genuinely absent: re-running an
+                    # ``ADD COLUMN ... AUTO_INCREMENT`` on a table that already has one is refused
+                    # with error 1075, not the duplicate-column 1060, so a plain try/except would
+                    # break every healthy startup.
+                    cursor.execute(
+                        "SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = DATABASE()"
+                    )
+                    present = {
+                        tuple(str(value).lower() for value in list(row.values())[:2])
+                        for row in cursor.fetchall()
+                    }
+                    for table, column, statement in _MIGRATIONS:
+                        if (table, column) not in present:
+                            cursor.execute(statement)
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -266,7 +275,8 @@ class SeekdbRepository:
 
     # ------------------------------------------------------------- connections
 
-    def _connect(self, *, with_database: bool = True) -> Any:
+    def _connect(self, *, with_database: bool = True, statement_timeout: int | None = None) -> Any:
+        timeout = statement_timeout or READ_TIMEOUT_SECONDS
         return pymysql.connect(
             host=self._host,
             port=self._port,
@@ -277,8 +287,8 @@ class SeekdbRepository:
             cursorclass=DictCursor,
             autocommit=False,
             connect_timeout=CONNECT_TIMEOUT_SECONDS,
-            read_timeout=READ_TIMEOUT_SECONDS,
-            write_timeout=READ_TIMEOUT_SECONDS,
+            read_timeout=timeout,
+            write_timeout=timeout,
         )
 
     def _connection_user(self) -> str:
@@ -602,3 +612,25 @@ def _task_values(task: LearningTask, position: int) -> dict[str, Any]:
 def _schema_statements() -> list[str]:
     sql = files("labrelay.seekdb").joinpath("schema.sql").read_text(encoding="utf-8")
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
+
+
+#: Columns a database laid down by an older schema is missing, as ``(table, column, ddl)``.
+#:
+#: ``seq`` matters because assets and events are read back in ``seq`` order: an upgraded database
+#: without it fails on the first ``list_assets`` with "Unknown column 'seq' in 'order clause'",
+#: which only a live seekdb can surface. ``UNIQUE`` is part of the statement because MySQL only
+#: auto-increments a column that is also a key.
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("projects", "handoff_ref", "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL"),
+    (
+        "projects",
+        "handoff_receipt_ref",
+        "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
+    ),
+    ("assets", "seq", "ALTER TABLE assets ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT UNIQUE"),
+    (
+        "task_events",
+        "seq",
+        "ALTER TABLE task_events ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT UNIQUE",
+    ),
+)

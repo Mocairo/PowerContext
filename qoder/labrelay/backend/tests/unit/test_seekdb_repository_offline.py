@@ -64,6 +64,9 @@ class FakeDatabase:
         self.commits = 0
         self.rollbacks = 0
         self.fail_on: tuple[str, Exception] | None = None
+        #: ``(table, column)`` pairs the ``information_schema`` probe reports. ``None`` stands for a
+        #: current database, so no migration runs; a test drops an entry to model an older one.
+        self.columns: set[tuple[str, str]] | None = None
 
     def connect(self, **kwargs) -> "FakeConnection":
         self.connect_kwargs.append(kwargs)
@@ -85,6 +88,15 @@ class FakeDatabase:
         self.statements.append(statement)
         if self.fail_on is not None and self.fail_on[0] in statement:
             raise self.fail_on[1]
+        if statement.startswith("SELECT table_name, column_name FROM information_schema"):
+            present = (
+                self.columns
+                if self.columns is not None
+                else {(table, column) for table, column, _ in seekdb_module._MIGRATIONS}
+            )
+            return [{"table_name": table, "column_name": column} for table, column in present], len(
+                present
+            )
         if statement.startswith(("CREATE DATABASE", "CREATE TABLE", "ALTER TABLE")):
             return [], 0
         if statement.startswith("INSERT"):
@@ -339,12 +351,41 @@ def test_initialize_creates_the_database_and_every_table(database) -> None:
     for table in TABLES:
         assert any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for statement in creates)
     alters = [statement for statement in database.statements if statement.startswith("ALTER TABLE")]
-    assert alters == [
-        "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
-        "ALTER TABLE projects ADD COLUMN handoff_receipt_ref VARCHAR(512) NULL",
-    ]
+    assert alters == []
     assert database.commits == 2
     assert database.closed == 2
+    # Schema setup gets the DDL budget: a backfill ALTER is a table rewrite and takes ~18s live,
+    # well past the 10s a normal query is allowed.
+    assert [kwargs["read_timeout"] for kwargs in database.connect_kwargs[:2]] == [
+        seekdb_module.DDL_TIMEOUT_SECONDS,
+        seekdb_module.DDL_TIMEOUT_SECONDS,
+    ]
+
+
+def test_initialize_adds_only_the_columns_an_older_database_is_missing(database) -> None:
+    """A current database must not be altered at all: re-adding an auto-increment column is 1075.
+
+    The live seekdb run turned this into a startup failure: the migrations used to run on every
+    boot and the second ``ADD COLUMN ... AUTO_INCREMENT`` on a fresh table was refused outright.
+    """
+    stale = {
+        (table, column)
+        for table, column, _ in seekdb_module._MIGRATIONS
+        if (table, column) not in {("assets", "seq"), ("projects", "handoff_ref")}
+    }
+    database.columns = stale
+    repository = _repository()
+
+    _run(repository.initialize())
+    database.statements.clear()
+    _run(repository.initialize())
+
+    assert [
+        statement for statement in database.statements if statement.startswith("ALTER TABLE")
+    ] == [
+        "ALTER TABLE projects ADD COLUMN handoff_ref VARCHAR(255) NULL",
+        "ALTER TABLE assets ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT UNIQUE",
+    ]
 
 
 def test_connection_carries_the_tenant_and_bounded_timeouts(database) -> None:
