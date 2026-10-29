@@ -21,7 +21,8 @@ from qoder_agent_sdk import (
 from labrelay.config import LabRelayConfig
 from labrelay.model.errors import ModelUnavailableError
 
-DEFAULT_MODEL = "qwen3.8-flash"
+#: Qoder catalog key for the built-in Qwen3.8-Flash (display name: Qwen3.8-Flash).
+DEFAULT_MODEL = "qfmodel"
 DEFAULT_DIMENSION = 256
 DEFAULT_TIMEOUT_SECONDS = 120
 
@@ -125,7 +126,11 @@ class QoderAgentModelGateway:
 
 
 def _text_of(message: Any) -> list[str]:
-    """Read text from SDK AssistantMessage/TextBlock and result-like messages."""
+    """Read text from SDK AssistantMessage/TextBlock, falling back to result-like messages.
+
+    Some SDK versions carry the same text on both the assistant message and the final result;
+    returning one source keeps the payload from being concatenated twice.
+    """
     parts: list[str] = []
     content = getattr(message, "content", None)
     if isinstance(content, list):
@@ -133,6 +138,8 @@ def _text_of(message: Any) -> list[str]:
             text = getattr(block, "text", None)
             if isinstance(text, str):
                 parts.append(text)
+    if parts:
+        return parts
     for attribute in ("result", "text"):
         value = getattr(message, attribute, None)
         if isinstance(value, str):
@@ -146,17 +153,45 @@ def _parse_json_object(text: str) -> dict[str, object]:
         cleaned = cleaned.strip("`")
         if cleaned.startswith("json"):
             cleaned = cleaned[4:]
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start < 0 or end < start:
+    candidate = _first_balanced_object(cleaned)
+    if candidate is None:
         raise ModelUnavailableError("The local Qoder model did not return a JSON object.")
     try:
-        parsed = json.loads(cleaned[start : end + 1])
+        parsed = json.loads(candidate)
     except json.JSONDecodeError as exc:
         raise ModelUnavailableError("The local Qoder model returned invalid JSON.") from exc
     if not isinstance(parsed, dict):
         raise ModelUnavailableError("The local Qoder model did not return a JSON object.")
     return parsed
+
+
+def _first_balanced_object(text: str) -> str | None:
+    """Return the first complete ``{...}`` span, so a duplicated reply still parses."""
+    start = text.find("{")
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        start = text.find("{", start + 1)
+    return None
 
 
 def _deterministic_vector(text: str, dimension: int) -> list[float]:
