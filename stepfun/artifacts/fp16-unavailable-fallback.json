@@ -1,0 +1,744 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profile": {
+        "name": "bge-auto-quantized-b4",
+        "config": {
+          "model": "bge",
+          "mode": "auto",
+          "batchSize": 4
+        },
+        "refreshEveryBatch": false
+      },
+      "status": "passed",
+      "runtime": {
+        "model": "bge",
+        "backend": "wasm",
+        "precision": "q8",
+        "loadMs": 626.109999999404,
+        "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+        "cold": true,
+        "browserCache": "cold",
+        "wasmThreads": 4,
+        "adapterInfo": {
+          "vendor": "nvidia",
+          "architecture": "pascal",
+          "device": "",
+          "description": ""
+        },
+        "gpuFeatures": [
+          "depth32float-stencil8",
+          "rg11b10ufloat-renderable",
+          "texture-formats-tier1",
+          "bgra8unorm-storage",
+          "texture-compression-bc",
+          "dual-source-blending",
+          "core-features-and-limits",
+          "float32-filterable",
+          "indirect-first-instance",
+          "float32-blendable",
+          "subgroup-size-control",
+          "texture-compression-unaligned",
+          "depth-clip-control",
+          "texture-compression-bc-sliced-3d",
+          "timestamp-query",
+          "texture-formats-tier2",
+          "clip-distances",
+          "primitive-index",
+          "texture-component-swizzle",
+          "subgroups"
+        ],
+        "adapter": "nvidia pascal",
+        "fileReadMs": 376.34999999403954,
+        "sessionInitMs": 238.45000000298023,
+        "warmupMs": 11.319999992847443
+      },
+      "modelFiles": {
+        "model": "bge",
+        "id": "Xenova/bge-small-zh-v1.5",
+        "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+        "downloadedAt": "2026-10-29T08:44:06.782Z",
+        "files": [
+          {
+            "file": "config.json",
+            "bytes": 716,
+            "sha256": "d4193ead3a810fd694fa8a31d7fc72fbaebc0668b603e398734bf2f6538ff42f"
+          },
+          {
+            "file": "tokenizer.json",
+            "bytes": 439125,
+            "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+          },
+          {
+            "file": "tokenizer_config.json",
+            "bytes": 367,
+            "sha256": "e6f3b96db926a37d4039995fbf5ad17de158dfb8f6343d607e4dbaad18d75f5a"
+          },
+          {
+            "file": "special_tokens_map.json",
+            "bytes": 125,
+            "sha256": "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3"
+          },
+          {
+            "file": "vocab.txt",
+            "bytes": 109540,
+            "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c"
+          },
+          {
+            "file": "onnx/model.onnx",
+            "bytes": 94851877,
+            "sha256": "69a0b846f4f116b5e6aabf9546ea6754d02264f3211a13a1bd69b31b8040749a"
+          },
+          {
+            "file": "onnx/model_fp16.onnx",
+            "bytes": 47497427,
+            "sha256": "60d0fe5eb8d4e251d4b24dff010a2625c10a013503f0d09f625e8a9b0311315f"
+          },
+          {
+            "file": "onnx/model_quantized.onnx",
+            "bytes": 24010842,
+            "sha256": "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc"
+          }
+        ],
+        "sizes": {
+          "fp32": 95401750,
+          "fp16": 48047300,
+          "q8": 24560715
+        }
+      },
+      "import": {
+        "type": "import",
+        "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+        "sources": 24,
+        "chunks": 24,
+        "embedMs": 348.92000000178814,
+        "writeMs": 759.2838999999803,
+        "refreshMs": 627.9900000000198,
+        "networkMs": 823.9800000190735,
+        "totalMs": 1820.7549999952316,
+        "throughput": 68.78367534069989,
+        "batchSize": 4,
+        "refreshEveryBatch": false,
+        "runtime": {
+          "model": "bge",
+          "backend": "wasm",
+          "precision": "q8",
+          "loadMs": 626.109999999404,
+          "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+          "cold": true,
+          "browserCache": "cold",
+          "wasmThreads": 4,
+          "adapterInfo": {
+            "vendor": "nvidia",
+            "architecture": "pascal",
+            "device": "",
+            "description": ""
+          },
+          "gpuFeatures": [
+            "depth32float-stencil8",
+            "rg11b10ufloat-renderable",
+            "texture-formats-tier1",
+            "bgra8unorm-storage",
+            "texture-compression-bc",
+            "dual-source-blending",
+            "core-features-and-limits",
+            "float32-filterable",
+            "indirect-first-instance",
+            "float32-blendable",
+            "subgroup-size-control",
+            "texture-compression-unaligned",
+            "depth-clip-control",
+            "texture-compression-bc-sliced-3d",
+            "timestamp-query",
+            "texture-formats-tier2",
+            "clip-distances",
+            "primitive-index",
+            "texture-component-swizzle",
+            "subgroups"
+          ],
+          "adapter": "nvidia pascal",
+          "fileReadMs": 376.34999999403954,
+          "sessionInitMs": 238.45000000298023,
+          "warmupMs": 11.319999992847443
+        },
+        "timestamp": "2026-10-29T09:03:59.175Z"
+      },
+      "vector": [
+        {
+          "queryId": "q01",
+          "round": 0,
+          "type": "query",
+          "query": "浏览器不支持 WebGPU 时怎么办？",
+          "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+          "mode": "vector",
+          "k": 5,
+          "queryEmbedMs": 10.730000004172325,
+          "searchMs": 45.6079000000027,
+          "serverMs": 50.34990000000107,
+          "networkMs": 57.25499999523163,
+          "totalMs": 86.85999999940395,
+          "runtime": {
+            "model": "bge",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 626.109999999404,
+            "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+            "cold": false,
+            "browserCache": "cold",
+            "wasmThreads": 4,
+            "adapterInfo": {
+              "vendor": "nvidia",
+              "architecture": "pascal",
+              "device": "",
+              "description": ""
+            },
+            "gpuFeatures": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "float32-blendable",
+              "subgroup-size-control",
+              "texture-compression-unaligned",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "texture-formats-tier2",
+              "clip-distances",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "adapter": "nvidia pascal",
+            "fileReadMs": 376.34999999403954,
+            "sessionInitMs": 238.45000000298023,
+            "warmupMs": 11.319999992847443
+          },
+          "ids": [
+            "gpu-fallback",
+            "mrl",
+            "cache",
+            "rust",
+            "privacy"
+          ],
+          "timestamp": "2026-10-29T09:03:59.263Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 0.9680147827042069
+          }
+        },
+        {
+          "queryId": "q02",
+          "round": 0,
+          "type": "query",
+          "query": "如何保证新导入的文档能被检索到？",
+          "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+          "mode": "vector",
+          "k": 5,
+          "queryEmbedMs": 9.07999999821186,
+          "searchMs": 42.9545999999973,
+          "serverMs": 45.84849999999278,
+          "networkMs": 50.48999999463558,
+          "totalMs": 67.4699999988079,
+          "runtime": {
+            "model": "bge",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 626.109999999404,
+            "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+            "cold": false,
+            "browserCache": "cold",
+            "wasmThreads": 4,
+            "adapterInfo": {
+              "vendor": "nvidia",
+              "architecture": "pascal",
+              "device": "",
+              "description": ""
+            },
+            "gpuFeatures": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "float32-blendable",
+              "subgroup-size-control",
+              "texture-compression-unaligned",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "texture-formats-tier2",
+              "clip-distances",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "adapter": "nvidia pascal",
+            "fileReadMs": 376.34999999403954,
+            "sessionInitMs": 238.45000000298023,
+            "warmupMs": 11.319999992847443
+          },
+          "ids": [
+            "index-refresh",
+            "sql-transaction",
+            "isolation",
+            "metrics",
+            "cache"
+          ],
+          "timestamp": "2026-10-29T09:03:59.430Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 1
+          }
+        }
+      ],
+      "hybrid": [
+        {
+          "queryId": "q01",
+          "round": 0,
+          "type": "query",
+          "query": "浏览器不支持 WebGPU 时怎么办？",
+          "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+          "mode": "hybrid",
+          "k": 5,
+          "queryEmbedMs": 9.134999990463257,
+          "searchMs": 60.60879999998724,
+          "serverMs": 63.44139999998151,
+          "networkMs": 70.87999999523163,
+          "totalMs": 99.40000000596046,
+          "runtime": {
+            "model": "bge",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 626.109999999404,
+            "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+            "cold": false,
+            "browserCache": "cold",
+            "wasmThreads": 4,
+            "adapterInfo": {
+              "vendor": "nvidia",
+              "architecture": "pascal",
+              "device": "",
+              "description": ""
+            },
+            "gpuFeatures": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "float32-blendable",
+              "subgroup-size-control",
+              "texture-compression-unaligned",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "texture-formats-tier2",
+              "clip-distances",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "adapter": "nvidia pascal",
+            "fileReadMs": 376.34999999403954,
+            "sessionInitMs": 238.45000000298023,
+            "warmupMs": 11.319999992847443
+          },
+          "ids": [
+            "gpu-fallback",
+            "cache",
+            "privacy",
+            "metrics",
+            "hybrid"
+          ],
+          "timestamp": "2026-10-29T09:03:59.363Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 0.9828422279067397
+          }
+        },
+        {
+          "queryId": "q02",
+          "round": 0,
+          "type": "query",
+          "query": "如何保证新导入的文档能被检索到？",
+          "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+          "mode": "hybrid",
+          "k": 5,
+          "queryEmbedMs": 16.54000000655651,
+          "searchMs": 47.623099999997066,
+          "serverMs": 51.00260000000708,
+          "networkMs": 56.945000007748604,
+          "totalMs": 83.48499999940395,
+          "runtime": {
+            "model": "bge",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 626.109999999404,
+            "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+            "cold": false,
+            "browserCache": "cold",
+            "wasmThreads": 4,
+            "adapterInfo": {
+              "vendor": "nvidia",
+              "architecture": "pascal",
+              "device": "",
+              "description": ""
+            },
+            "gpuFeatures": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "float32-blendable",
+              "subgroup-size-control",
+              "texture-compression-unaligned",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "texture-formats-tier2",
+              "clip-distances",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "adapter": "nvidia pascal",
+            "fileReadMs": 376.34999999403954,
+            "sessionInitMs": 238.45000000298023,
+            "warmupMs": 11.319999992847443
+          },
+          "ids": [
+            "index-refresh",
+            "metrics",
+            "sql-transaction",
+            "cache",
+            "isolation"
+          ],
+          "timestamp": "2026-10-29T09:03:59.514Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 0.9828422279067397
+          }
+        }
+      ],
+      "summary": {
+        "vector": {
+          "recallAt5": 1,
+          "ndcgAt5": 0.9840073913521035,
+          "medianQueryMs": 67.4699999988079,
+          "p95QueryMs": 86.85999999940395,
+          "medianSearchMs": 42.9545999999973,
+          "medianQueryEmbeddingMs": 9.07999999821186
+        },
+        "hybrid": {
+          "recallAt5": 1,
+          "ndcgAt5": 0.9828422279067397,
+          "medianQueryMs": 83.48499999940395,
+          "p95QueryMs": 99.40000000596046,
+          "medianSearchMs": 47.623099999997066,
+          "medianQueryEmbeddingMs": 9.134999990463257
+        }
+      },
+      "firstWarmQuery": {
+        "queryId": "q01",
+        "round": 0,
+        "type": "query",
+        "query": "浏览器不支持 WebGPU 时怎么办？",
+        "kbId": "kb_4428e348a9ac458e87754260cb631cc8",
+        "mode": "hybrid",
+        "k": 5,
+        "queryEmbedMs": 9.134999990463257,
+        "searchMs": 60.60879999998724,
+        "serverMs": 63.44139999998151,
+        "networkMs": 70.87999999523163,
+        "totalMs": 99.40000000596046,
+        "runtime": {
+          "model": "bge",
+          "backend": "wasm",
+          "precision": "q8",
+          "loadMs": 626.109999999404,
+          "reason": "WebGPU 初始化失败：The device (webgpu) does not support fp16.",
+          "cold": false,
+          "browserCache": "cold",
+          "wasmThreads": 4,
+          "adapterInfo": {
+            "vendor": "nvidia",
+            "architecture": "pascal",
+            "device": "",
+            "description": ""
+          },
+          "gpuFeatures": [
+            "depth32float-stencil8",
+            "rg11b10ufloat-renderable",
+            "texture-formats-tier1",
+            "bgra8unorm-storage",
+            "texture-compression-bc",
+            "dual-source-blending",
+            "core-features-and-limits",
+            "float32-filterable",
+            "indirect-first-instance",
+            "float32-blendable",
+            "subgroup-size-control",
+            "texture-compression-unaligned",
+            "depth-clip-control",
+            "texture-compression-bc-sliced-3d",
+            "timestamp-query",
+            "texture-formats-tier2",
+            "clip-distances",
+            "primitive-index",
+            "texture-component-swizzle",
+            "subgroups"
+          ],
+          "adapter": "nvidia pascal",
+          "fileReadMs": 376.34999999403954,
+          "sessionInitMs": 238.45000000298023,
+          "warmupMs": 11.319999992847443
+        },
+        "ids": [
+          "gpu-fallback",
+          "cache",
+          "privacy",
+          "metrics",
+          "hybrid"
+        ],
+        "timestamp": "2026-10-29T09:03:59.363Z",
+        "quality": {
+          "recall": 1,
+          "ndcg": 0.9828422279067397
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-10-29T09:03:56.158Z",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 28,
+  "deviceMemory": 32,
+  "crossOriginIsolated": true,
+  "datasetVersion": "1.0.0",
+  "corpusSize": 24,
+  "queryCount": 2,
+  "relevance": "frozen graded judgments; gains 2^grade-1; recall denominator all relevant IDs",
+  "maxQualityDrop": 0.02,
+  "repeats": 1,
+  "modelVersions": {
+    "gemma2": {
+      "name": "EmbeddingGemma 2",
+      "id": "onnx-community/embeddinggemma-2-ONNX",
+      "original": "google/embeddinggemma-2",
+      "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+      "dimensions": 768,
+      "pooling": "mean",
+      "maxLength": 512,
+      "queryPrefix": "task: search result | query: ",
+      "license": "Apache-2.0"
+    },
+    "bge": {
+      "name": "BGE Small 中文",
+      "id": "Xenova/bge-small-zh-v1.5",
+      "original": "BAAI/bge-small-zh-v1.5",
+      "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+      "dimensions": 512,
+      "pooling": "cls",
+      "maxLength": 512,
+      "queryPrefix": "为这个句子生成表示以用于检索相关文章：",
+      "license": "MIT"
+    }
+  },
+  "database": {
+    "ok": true,
+    "database": "stepfun_edge_kb",
+    "version": "5.7.25-OceanBase seekdb-v1.4.0.0",
+    "inference": "browser-only",
+    "models": {
+      "gemma2": {
+        "name": "EmbeddingGemma 2",
+        "id": "onnx-community/embeddinggemma-2-ONNX",
+        "original": "google/embeddinggemma-2",
+        "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+        "dimensions": 768,
+        "pooling": "mean",
+        "maxLength": 512,
+        "queryPrefix": "task: search result | query: ",
+        "license": "Apache-2.0"
+      },
+      "bge": {
+        "name": "BGE Small 中文",
+        "id": "Xenova/bge-small-zh-v1.5",
+        "original": "BAAI/bge-small-zh-v1.5",
+        "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+        "dimensions": 512,
+        "pooling": "cls",
+        "maxLength": 512,
+        "queryPrefix": "为这个句子生成表示以用于检索相关文章：",
+        "license": "MIT"
+      }
+    }
+  },
+  "resourceAudit": [
+    {
+      "name": "http://127.0.0.1:4177/assets/index-DLdHNmjm.js",
+      "initiatorType": "script",
+      "duration": 12.729999989271164,
+      "transferSize": 35563
+    },
+    {
+      "name": "http://127.0.0.1:4177/assets/index-Cz6cnybJ.css",
+      "initiatorType": "link",
+      "duration": 16.435000002384186,
+      "transferSize": 18219
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/health",
+      "initiatorType": "fetch",
+      "duration": 3.4200000017881393,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/assets/embedding.worker-CvrOybeQ.js",
+      "initiatorType": "other",
+      "duration": -13.614999994635582,
+      "transferSize": 528088
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 14.560000002384186,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/assets/benchmark-DK6Ddcwv.js",
+      "initiatorType": "script",
+      "duration": 2.4849999994039536,
+      "transferSize": 6540
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/health",
+      "initiatorType": "fetch",
+      "duration": 2.7849999964237213,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 533.3199999928474,
+      "transferSize": 627
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 12.215000003576279,
+      "transferSize": 629
+    },
+    {
+      "name": "http://127.0.0.1:4177/models/Xenova/bge-small-zh-v1.5/manifest.json",
+      "initiatorType": "fetch",
+      "duration": 2.5050000101327896,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/models/Xenova/bge-small-zh-v1.5/manifest.json",
+      "initiatorType": "fetch",
+      "duration": 3.7049999982118607,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 272.25,
+      "transferSize": 414
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 115.98499999940395,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 108.375,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 125.98999999463558,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 78.30999998748302,
+      "transferSize": 413
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/chunks",
+      "initiatorType": "fetch",
+      "duration": 111.47000001370907,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/refresh",
+      "initiatorType": "fetch",
+      "duration": 631.859999999404,
+      "transferSize": 346
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 6.440000012516975,
+      "transferSize": 630
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/search",
+      "initiatorType": "fetch",
+      "duration": 55.10999999940395,
+      "transferSize": 2493
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/search",
+      "initiatorType": "fetch",
+      "duration": 67.70499999821186,
+      "transferSize": 2527
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/search",
+      "initiatorType": "fetch",
+      "duration": 49.189999997615814,
+      "transferSize": 2559
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_4428e348a9ac458e87754260cb631cc8/search",
+      "initiatorType": "fetch",
+      "duration": 54.775000005960464,
+      "transferSize": 2498
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 5.920000001788139,
+      "transferSize": 302
+    }
+  ],
+  "completedAt": "2026-10-29T09:03:59.868Z",
+  "allPassed": true
+}

@@ -1,0 +1,23 @@
+name: stepfun-edge-kb
+services:
+  seekdb:
+    image: oceanbase/seekdb@sha256:4db4961869d554313520d6081fca29265ba6da6db7313311bd8acbed771a956b
+    ports:
+      - "127.0.0.1:2889:2881"
+    environment:
+      ROOT_PASSWORD: ${SEEKDB_PASSWORD:-}
+      CPU_COUNT: "4"
+      MEMORY_LIMIT: "2G"
+      LOG_DISK_SIZE: "2G"
+      DATAFILE_SIZE: "2G"
+      SEEKDB_DATABASE: ${SEEKDB_DATABASE:-stepfun_edge_kb}
+    volumes:
+      - seekdb-data:/var/lib/seekdb
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h127.0.0.1 -P2881 -uroot $${ROOT_PASSWORD:+-p$$ROOT_PASSWORD} -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+volumes:
+  seekdb-data:

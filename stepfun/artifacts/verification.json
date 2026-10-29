@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-29",
+  "baseBranch": "2026-competition-ecosystem",
+  "baseCommit": "d647275c308e09b7b623f322a26f5c4e85734fb0",
+  "checks": {
+    "typescriptAndProductionBuild": "passed",
+    "unitTests": { "passed": 4, "failed": 0 },
+    "realSeekdbContractChecks": { "passed": 7, "failed": 0, "evidence": "database-validation.json" },
+    "gemma2BrowserMatrix": { "passed": 4, "failed": 0, "evidence": "submission-benchmark.json" },
+    "quantizedQualityGate": { "maxAbsoluteDrop": 0.02, "passed": true },
+    "adapterUnavailableFaultInjection": { "passed": true, "actualInference": "wasm/q8", "evidence": "fallback-browser.json" },
+    "realFp16UnsupportedAdapterFallback": { "passed": true, "actualInference": "wasm/q8", "evidence": "fp16-unavailable-fallback.json" },
+    "wasmOperatorNumericalEquivalence": { "randomTrials": 20, "maxAbsoluteError": 0, "evidence": "wasm-graph-validation.json" },
+    "rawMetricsAndSummaryRecomputation": "passed",
+    "desktopUi": { "viewport": "1280x900", "createCollection": true, "sampleImport24": true, "hybridSearch": true, "expandOriginalText": true },
+    "narrowUi": { "viewport": "414x896", "documentScrollWidth": 399, "documentClientWidth": 399, "collectionButtonAccessible": true },
+    "technicalNotePdf": { "pages": 1, "renderInspected": true, "sha256": "dc5c226204849451ad41901f747293e094d39fb569bbc8be8762b49c9621d96d" }
+  },
+  "verificationLimits": [
+    "Browser measurements are Chromium 156 on this Windows machine; native Edge not independently tested.",
+    "Physical no-GPU machine not tested; adapter-unavailable fault injection and real WASM execution verified.",
+    "Server mode tested; optional SDK embedded mode not tested.",
+    "Synthetic 24-document, 12-query evaluation is not a standard benchmark.",
+    "Sequential profile runs and different model-cache states are recorded and must not be treated as randomized measurements."
+  ]
+}

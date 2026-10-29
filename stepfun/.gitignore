@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.data/
+.tools/
+public/models/
+public/ort/
+artifacts/*.zip
+artifacts/benchmark-*.json
+artifacts/benchmark-*.png
+artifacts/integration-*.json
+artifacts/technical-note-*.png
+playwright-report/
+test-results/

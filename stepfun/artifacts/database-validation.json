@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-10-29T09:01:17.736Z",
+  "databaseVersion": "5.7.25-OceanBase seekdb-v1.4.0.0",
+  "syntheticVectors": true,
+  "note": "Database contract test only; not embedding benchmark evidence",
+  "checks": [
+    {
+      "check": "pending writes block search until explicit refresh",
+      "passed": true
+    },
+    {
+      "check": "real seekdb hybrid search returns newly refreshed text",
+      "passed": true
+    },
+    {
+      "check": "idempotent upsert does not duplicate chunks",
+      "passed": true
+    },
+    {
+      "check": "second incremental import is immediately searchable",
+      "passed": true
+    },
+    {
+      "check": "12 concurrent hybrid queries preserve collection/session isolation",
+      "passed": true
+    },
+    {
+      "check": "wrong model, dimensions and zero vectors rejected",
+      "passed": true
+    },
+    {
+      "check": "new SDK connection restores registry and vectors without server embedder",
+      "passed": true
+    }
+  ]
+}

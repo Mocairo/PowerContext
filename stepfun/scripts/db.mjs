@@ -1,0 +1,12 @@
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const action = process.argv[2] ?? 'up';
+const args = action === 'up' ? ['compose', 'up', '-d', '--wait'] : action === 'down' ? ['compose', 'down'] : action === 'status' ? ['compose', 'ps'] : null;
+if (!args) throw new Error('Use db.mjs up|down|status');
+const native = spawnSync('docker', ['compose', 'version'], { cwd: root, stdio: 'ignore' });
+const useWSL = process.platform === 'win32' && native.error?.code === 'ENOENT';
+const result = useWSL ? spawnSync('wsl.exe', ['--cd', root, '--exec', 'docker', ...args], { stdio: 'inherit' }) : spawnSync('docker', args, { cwd: root, stdio: 'inherit' });
+if (result.error) console.error(result.error.message);
+process.exit(result.status ?? 1);

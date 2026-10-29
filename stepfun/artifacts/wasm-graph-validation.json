@@ -1,0 +1,11 @@
+{
+  "seed": 20261029,
+  "randomTrials": 20,
+  "elementsPerTrial": 4096,
+  "maxAbsoluteError": 0.0,
+  "loweredSubgraphOnnxChecker": "passed",
+  "otherSourceNodesAndWeightsUnchanged": true,
+  "fullGraphCheckerDiagnosticUnchangedFromUpstream": "No Op registered for SimplifiedLayerNormalization with domain_version of 21\n\n==> Context: Bad node spec for node. Name: /model/ple/per_layer_projection_norm/SimplifiedLayerNormalization OpType: SimplifiedLayerNormalization",
+  "patchedGraphSha256": "61ffb0b3633c010b798fd653fa8dbff9f1c2490ed66708ca80096cadccf6c1cf",
+  "note": "Synthetic operator equivalence only; browser benchmark separately tests actual embeddings."
+}

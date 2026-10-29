@@ -1,0 +1,677 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profile": {
+        "name": "gemma2-auto-adapter-unavailable-injection",
+        "config": {
+          "model": "gemma2",
+          "mode": "auto",
+          "batchSize": 4,
+          "simulateNoGpu": true
+        },
+        "refreshEveryBatch": false
+      },
+      "status": "passed",
+      "runtime": {
+        "model": "gemma2",
+        "backend": "wasm",
+        "precision": "q8",
+        "loadMs": 1644.6850000023842,
+        "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+        "cold": true
+      },
+      "modelFiles": {
+        "model": "gemma2",
+        "id": "onnx-community/embeddinggemma-2-ONNX",
+        "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+        "downloadedAt": "2026-10-29T08:54:21.294Z",
+        "files": [
+          {
+            "file": "config.json",
+            "bytes": 5031,
+            "sha256": "8d011bfe08b5e345bbe0b81e5c6fd02c381920b345b986047bc2a33ce7b90d1d"
+          },
+          {
+            "file": "tokenizer.json",
+            "bytes": 32170510,
+            "sha256": "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4"
+          },
+          {
+            "file": "tokenizer_config.json",
+            "bytes": 1599,
+            "sha256": "17bd5d6e9364ca49a534e1502076593317c298d4a663623091ed45388f004874"
+          },
+          {
+            "file": "onnx/model_quantized.onnx",
+            "bytes": 495165,
+            "sha256": "d06edd601f851c633a2519304cbeb8dc6170d7ceb61b436625c17fb9b6e74953"
+          },
+          {
+            "file": "onnx/model_quantized.onnx_data",
+            "bytes": 313724928,
+            "sha256": "278a7ff1248c3618e4bd11a607fc54f7bdc7778854230f3956d3f86bd9db4f3b"
+          },
+          {
+            "file": "onnx/model_wasm_quantized.onnx",
+            "bytes": 496233,
+            "sha256": "61ffb0b3633c010b798fd653fa8dbff9f1c2490ed66708ca80096cadccf6c1cf",
+            "derived": "GatherBlockQuantized -> standard ONNX Gather/Cast/Sub/Mul/Reshape; identical external INT8 weights"
+          }
+        ],
+        "sizes": {
+          "q8": 346397233,
+          "q8wasm": 346398301
+        }
+      },
+      "import": {
+        "type": "import",
+        "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+        "sources": 24,
+        "chunks": 24,
+        "embedMs": 3459.7699999958277,
+        "writeMs": 1641.7251999999862,
+        "refreshMs": 621.8696000000928,
+        "networkMs": 1690.8050000071526,
+        "totalMs": 5824.944999992847,
+        "throughput": 6.936877306881366,
+        "batchSize": 4,
+        "refreshEveryBatch": false,
+        "runtime": {
+          "model": "gemma2",
+          "backend": "wasm",
+          "precision": "q8",
+          "loadMs": 1644.6850000023842,
+          "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+          "cold": true
+        },
+        "timestamp": "2026-10-29T08:54:58.566Z"
+      },
+      "vector": [
+        {
+          "queryId": "q01",
+          "round": 0,
+          "type": "query",
+          "query": "浏览器不支持 WebGPU 时怎么办？",
+          "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+          "mode": "vector",
+          "k": 5,
+          "queryEmbedMs": 93.72000001370907,
+          "searchMs": 51.59239999996498,
+          "serverMs": 55.07339999999385,
+          "networkMs": 58.349999994039536,
+          "totalMs": 154.89500001072884,
+          "runtime": {
+            "model": "gemma2",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 1644.6850000023842,
+            "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+            "cold": false
+          },
+          "ids": [
+            "gpu-fallback",
+            "privacy",
+            "gpu-display",
+            "hybrid",
+            "metrics"
+          ],
+          "timestamp": "2026-10-29T08:54:58.721Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 1
+          }
+        },
+        {
+          "queryId": "q02",
+          "round": 0,
+          "type": "query",
+          "query": "如何保证新导入的文档能被检索到？",
+          "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+          "mode": "vector",
+          "k": 5,
+          "queryEmbedMs": 96.53499999642372,
+          "searchMs": 46.87089999997988,
+          "serverMs": 51.509599999990314,
+          "networkMs": 54.82500000298023,
+          "totalMs": 183.35999999940395,
+          "runtime": {
+            "model": "gemma2",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 1644.6850000023842,
+            "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+            "cold": false
+          },
+          "ids": [
+            "index-refresh",
+            "cache",
+            "privacy",
+            "isolation",
+            "quality"
+          ],
+          "timestamp": "2026-10-29T08:54:59.121Z",
+          "quality": {
+            "recall": 0.5,
+            "ndcg": 0.9173194127129571
+          }
+        }
+      ],
+      "hybrid": [
+        {
+          "queryId": "q01",
+          "round": 0,
+          "type": "query",
+          "query": "浏览器不支持 WebGPU 时怎么办？",
+          "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+          "mode": "hybrid",
+          "k": 5,
+          "queryEmbedMs": 87.87000000476837,
+          "searchMs": 98.24429999990389,
+          "serverMs": 101.00170000002254,
+          "networkMs": 104.1799999922514,
+          "totalMs": 215.58500000834465,
+          "runtime": {
+            "model": "gemma2",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 1644.6850000023842,
+            "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+            "cold": false
+          },
+          "ids": [
+            "gpu-fallback",
+            "gpu-display",
+            "privacy",
+            "hybrid",
+            "metrics"
+          ],
+          "timestamp": "2026-10-29T08:54:58.937Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 0.9828422279067397
+          }
+        },
+        {
+          "queryId": "q02",
+          "round": 0,
+          "type": "query",
+          "query": "如何保证新导入的文档能被检索到？",
+          "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+          "mode": "hybrid",
+          "k": 5,
+          "queryEmbedMs": 94.29500000178814,
+          "searchMs": 88.96389999997336,
+          "serverMs": 91.70449999999255,
+          "networkMs": 94.67000000178814,
+          "totalMs": 200.2199999988079,
+          "runtime": {
+            "model": "gemma2",
+            "backend": "wasm",
+            "precision": "q8",
+            "loadMs": 1644.6850000023842,
+            "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+            "cold": false
+          },
+          "ids": [
+            "index-refresh",
+            "cache",
+            "metrics",
+            "sql-transaction",
+            "isolation"
+          ],
+          "timestamp": "2026-10-29T08:54:59.321Z",
+          "quality": {
+            "recall": 1,
+            "ndcg": 0.9737576937588317
+          }
+        }
+      ],
+      "summary": {
+        "vector": {
+          "recallAt5": 0.75,
+          "ndcgAt5": 0.9586597063564786,
+          "medianQueryMs": 154.89500001072884,
+          "p95QueryMs": 183.35999999940395,
+          "medianSearchMs": 46.87089999997988,
+          "medianQueryEmbeddingMs": 93.72000001370907
+        },
+        "hybrid": {
+          "recallAt5": 1,
+          "ndcgAt5": 0.9782999608327857,
+          "medianQueryMs": 200.2199999988079,
+          "p95QueryMs": 215.58500000834465,
+          "medianSearchMs": 88.96389999997336,
+          "medianQueryEmbeddingMs": 87.87000000476837
+        }
+      },
+      "firstWarmQuery": {
+        "queryId": "q01",
+        "round": 0,
+        "type": "query",
+        "query": "浏览器不支持 WebGPU 时怎么办？",
+        "kbId": "kb_06a16fa8208d4cc6875e8d7df7678d76",
+        "mode": "hybrid",
+        "k": 5,
+        "queryEmbedMs": 87.87000000476837,
+        "searchMs": 98.24429999990389,
+        "serverMs": 101.00170000002254,
+        "networkMs": 104.1799999922514,
+        "totalMs": 215.58500000834465,
+        "runtime": {
+          "model": "gemma2",
+          "backend": "wasm",
+          "precision": "q8",
+          "loadMs": 1644.6850000023842,
+          "reason": "WebGPU 初始化失败：验收注入：GPU adapter 不可用",
+          "cold": false
+        },
+        "ids": [
+          "gpu-fallback",
+          "gpu-display",
+          "privacy",
+          "hybrid",
+          "metrics"
+        ],
+        "timestamp": "2026-10-29T08:54:58.937Z",
+        "quality": {
+          "recall": 1,
+          "ndcg": 0.9828422279067397
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-10-29T08:54:50.356Z",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 28,
+  "deviceMemory": 32,
+  "crossOriginIsolated": true,
+  "datasetVersion": "1.0.0",
+  "corpusSize": 24,
+  "queryCount": 2,
+  "relevance": "frozen graded judgments; gains 2^grade-1; recall denominator all relevant IDs",
+  "maxQualityDrop": 0.02,
+  "repeats": 1,
+  "modelVersions": {
+    "gemma2": {
+      "name": "EmbeddingGemma 2",
+      "id": "onnx-community/embeddinggemma-2-ONNX",
+      "original": "google/embeddinggemma-2",
+      "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+      "dimensions": 768,
+      "pooling": "mean",
+      "maxLength": 512,
+      "queryPrefix": "task: search result | query: ",
+      "license": "Apache-2.0"
+    },
+    "bge": {
+      "name": "BGE Small 中文",
+      "id": "Xenova/bge-small-zh-v1.5",
+      "original": "BAAI/bge-small-zh-v1.5",
+      "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+      "dimensions": 512,
+      "pooling": "cls",
+      "maxLength": 512,
+      "queryPrefix": "为这个句子生成表示以用于检索相关文章：",
+      "license": "MIT"
+    }
+  },
+  "database": {
+    "ok": true,
+    "database": "stepfun_edge_kb",
+    "version": "5.7.25-OceanBase seekdb-v1.4.0.0",
+    "inference": "browser-only",
+    "models": {
+      "gemma2": {
+        "name": "EmbeddingGemma 2",
+        "id": "onnx-community/embeddinggemma-2-ONNX",
+        "original": "google/embeddinggemma-2",
+        "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+        "dimensions": 768,
+        "pooling": "mean",
+        "maxLength": 512,
+        "queryPrefix": "task: search result | query: ",
+        "license": "Apache-2.0"
+      },
+      "bge": {
+        "name": "BGE Small 中文",
+        "id": "Xenova/bge-small-zh-v1.5",
+        "original": "BAAI/bge-small-zh-v1.5",
+        "revision": "75c43b069aac4d136ba6bc1122f995fedcfd2781",
+        "dimensions": 512,
+        "pooling": "cls",
+        "maxLength": 512,
+        "queryPrefix": "为这个句子生成表示以用于检索相关文章：",
+        "license": "MIT"
+      }
+    }
+  },
+  "resourceAudit": [
+    {
+      "name": "http://127.0.0.1:4177/@vite/client",
+      "initiatorType": "script",
+      "duration": 12.700000002980232,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/src/main.ts?t=1793264059365",
+      "initiatorType": "script",
+      "duration": 12.739999994635582,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/vite/dist/client/env.mjs",
+      "initiatorType": "script",
+      "duration": 2.885000005364418,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/src/style.css",
+      "initiatorType": "script",
+      "duration": 3.2950000017881393,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/src/embedding.ts",
+      "initiatorType": "script",
+      "duration": 3.3250000029802322,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/shared/chunking.ts",
+      "initiatorType": "script",
+      "duration": 3.3499999940395355,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/shared/model.ts?t=1793263655538",
+      "initiatorType": "script",
+      "duration": 3.364999994635582,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/data/evaluation.json?import",
+      "initiatorType": "script",
+      "duration": 3.3700000047683716,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/health",
+      "initiatorType": "fetch",
+      "duration": 1.6949999928474426,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 13.280000001192093,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/src/embedding.worker.ts?worker_file&type=module",
+      "initiatorType": "other",
+      "duration": -7.475000008940697,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/vite/dist/client/env.mjs",
+      "initiatorType": "script",
+      "duration": 3.8450000137090683,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/@huggingface/transformers/dist/transformers.web.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 9.855000004172325,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/shared/model.ts?t=1793263655538",
+      "initiatorType": "script",
+      "duration": 3.7650000005960464,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/src/benchmark.ts?t=1793263655548",
+      "initiatorType": "script",
+      "duration": 3.6500000059604645,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 2.5399999916553497,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/index.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.594999998807907,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/backend.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.0900000035762787,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/env.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.4650000035762787,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/inference-session.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.8599999994039536,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.9849999994039536,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-conversion.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.9849999994039536,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-factory.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 2.1099999994039536,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/trace.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 2.0999999940395355,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/onnx-model.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 2.080000013113022,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/onnx-value.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 2.064999997615814,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/@vite/client",
+      "initiatorType": "script",
+      "duration": 2.3050000071525574,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/backend-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.084999993443489,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/env-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.104999989271164,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/inference-session-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.8400000035762787,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.9650000035762787,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/version.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 0.9149999916553497,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-conversion-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.3149999976158142,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-factory-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.540000006556511,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-impl-type-mapping.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.5549999922513962,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/node_modules/onnxruntime-common/dist/esm/tensor-utils-impl.js?v=2c513cbc",
+      "initiatorType": "script",
+      "duration": 1.8250000029802322,
+      "transferSize": 0
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/health",
+      "initiatorType": "fetch",
+      "duration": 1.6099999994039536,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 692.2749999910593,
+      "transferSize": 663
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 18.440000012516975,
+      "transferSize": 665
+    },
+    {
+      "name": "http://127.0.0.1:4177/models/onnx-community/embeddinggemma-2-ONNX/manifest.json",
+      "initiatorType": "fetch",
+      "duration": 3.8400000035762787,
+      "transferSize": 1628
+    },
+    {
+      "name": "http://127.0.0.1:4177/models/onnx-community/embeddinggemma-2-ONNX/manifest.json",
+      "initiatorType": "fetch",
+      "duration": 6.584999993443489,
+      "transferSize": 300
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 459.06999999284744,
+      "transferSize": 412
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 225.70499999821186,
+      "transferSize": 414
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 259.89000000059605,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 263.70000000298023,
+      "transferSize": 414
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 231.24000000953674,
+      "transferSize": 415
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/chunks",
+      "initiatorType": "fetch",
+      "duration": 242.42000000178814,
+      "transferSize": 414
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/refresh",
+      "initiatorType": "fetch",
+      "duration": 624.9449999928474,
+      "transferSize": 346
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 6.790000006556511,
+      "transferSize": 666
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/search",
+      "initiatorType": "fetch",
+      "duration": 57.3999999910593,
+      "transferSize": 2538
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/search",
+      "initiatorType": "fetch",
+      "duration": 103.43999999761581,
+      "transferSize": 2476
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/search",
+      "initiatorType": "fetch",
+      "duration": 54.11999998986721,
+      "transferSize": 2569
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections/kb_06a16fa8208d4cc6875e8d7df7678d76/search",
+      "initiatorType": "fetch",
+      "duration": 93.92000000178814,
+      "transferSize": 2500
+    },
+    {
+      "name": "http://127.0.0.1:4177/api/collections",
+      "initiatorType": "fetch",
+      "duration": 3.010000005364418,
+      "transferSize": 302
+    }
+  ],
+  "completedAt": "2026-10-29T08:54:59.629Z",
+  "allPassed": true
+}
