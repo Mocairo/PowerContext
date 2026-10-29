@@ -48,7 +48,7 @@ export function HandoffPanel({ projectId, onConfirmed }: Props) {
   }
 
   return (
-    <section className="card">
+    <section className="card" id="handoff">
       <h2>5. 学长交接</h2>
       <form onSubmit={prepare}>
         <label>

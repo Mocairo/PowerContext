@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { Citation } from "../types";
@@ -7,6 +7,21 @@ interface Props {
   projectId: string;
   disabled?: boolean;
 }
+
+interface Exchange {
+  id: number;
+  question: string;
+  answer: string;
+  citations: Citation[];
+  error: string;
+  pending: boolean;
+}
+
+const SAMPLE_QUESTIONS = [
+  "这份资料主要讲了什么？",
+  "旧数据缓存会不会影响数据划分？",
+  "下一步应该做什么？"
+];
 
 function formatLocator(locator: Citation["locator"]): string {
   if ("section" in locator) return `section: ${locator.section}`;
@@ -19,28 +34,65 @@ function formatLocator(locator: Citation["locator"]): string {
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(" · ") : "";
 }
 
-export function QuestionPanel({ projectId, disabled = false }: Props) {
-  const [question, setQuestion] = useState("旧数据缓存会不会影响数据划分？");
-  const [answer, setAnswer] = useState("");
-  const [citations, setCitations] = useState<Citation[]>([]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+function Citations({ citations }: { citations: Citation[] }) {
+  if (!citations.length) return null;
+  return (
+    <div className="citation-list">
+      <strong>引用证据</strong>
+      <ul>
+        {citations.map((citation) => (
+          <li key={`${citation.asset_id}-${JSON.stringify(citation.locator)}`}>
+            <div>
+              <span className="badge todo">{citation.kind}</span> {citation.title}
+              <small> · {formatLocator(citation.locator)}</small>
+            </div>
+            {citation.excerpt && <p className="muted">{citation.excerpt.slice(0, 240)}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
-  async function ask(event: React.FormEvent) {
-    event.preventDefault();
-    if (busy) return;
-    setError("");
-    setBusy(true);
-    setAnswer("");
-    setCitations([]);
+export function QuestionPanel({ projectId, disabled = false }: Props) {
+  const [question, setQuestion] = useState("");
+  const [exchanges, setExchanges] = useState<Exchange[]>([]);
+  const nextId = useRef(1);
+  const lastTurn = useRef<HTMLDivElement>(null);
+  const busy = exchanges.some((exchange) => exchange.pending);
+
+  useEffect(() => {
+    lastTurn.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [exchanges]);
+
+  function patch(id: number, update: Partial<Exchange>) {
+    setExchanges((current) =>
+      current.map((exchange) => (exchange.id === id ? { ...exchange, ...update } : exchange))
+    );
+  }
+
+  async function send(text: string, event?: React.FormEvent) {
+    event?.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || busy) return;
+    const id = nextId.current++;
+    setExchanges((current) => [
+      ...current,
+      { id, question: trimmed, answer: "", citations: [], error: "", pending: true }
+    ]);
+    setQuestion("");
     try {
-      const response = await api.askQuestion(projectId, question);
-      setAnswer(response.answer);
-      setCitations(response.citations);
+      const response = await api.askQuestion(projectId, trimmed);
+      patch(id, {
+        answer: response.answer,
+        citations: response.citations,
+        pending: false
+      });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
+      patch(id, {
+        error: cause instanceof Error ? cause.message : String(cause),
+        pending: false
+      });
     }
   }
 
@@ -50,42 +102,68 @@ export function QuestionPanel({ projectId, disabled = false }: Props) {
       <p className="muted">
         回答只使用本项目的检索结果；找不到证据时会明确说“无法确认”，不会补写资料里没有的内容。
       </p>
-      <form onSubmit={ask} className="row">
-        <label>
-          问题
-          <input
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            disabled={disabled || busy}
-            required
-          />
-        </label>
-        <button type="submit" disabled={disabled || busy}>
-          {busy ? "检索并回答中…" : "提问"}
-        </button>
-      </form>
-      {disabled && <p className="muted">先上传或导入资料，再开始提问。</p>}
-      {answer && <p className="answer">{answer}</p>}
-      {citations.length > 0 && (
-        <div className="citation-list">
-          <strong>引用证据</strong>
-          <ul>
-            {citations.map((citation) => (
-              <li key={`${citation.asset_id}-${JSON.stringify(citation.locator)}`}>
-                <div>
-                  <span className="badge todo">{citation.kind}</span> {citation.title}
-                  <small> · {formatLocator(citation.locator)}</small>
+
+      {disabled ? (
+        <p className="muted">先上传或导入资料，再开始提问。</p>
+      ) : (
+        <>
+          <div className="chat" aria-live="polite">
+            {exchanges.length === 0 && (
+              <p className="muted">还没有提问。可以直接输入，或点下面的示例问题。</p>
+            )}
+            {exchanges.map((exchange, index) => (
+              <div
+                key={exchange.id}
+                className="chat-turn"
+                ref={index === exchanges.length - 1 ? lastTurn : undefined}
+              >
+                <p className="chat-question">{exchange.question}</p>
+                <div className="chat-answer">
+                  {exchange.pending ? (
+                    <span className="muted">检索资料并生成回答…</span>
+                  ) : exchange.error ? (
+                    <span className="error">{exchange.error}</span>
+                  ) : (
+                    <>
+                      <p className="answer">{exchange.answer}</p>
+                      <Citations citations={exchange.citations} />
+                    </>
+                  )}
                 </div>
-                {citation.excerpt && <p className="muted">{citation.excerpt.slice(0, 240)}</p>}
-              </li>
+              </div>
             ))}
-          </ul>
-        </div>
-      )}
-      {error && (
-        <p role="status" className="error">
-          {error}
-        </p>
+          </div>
+
+          <div className="sample-row">
+            {SAMPLE_QUESTIONS.map((sample) => (
+              <button
+                key={sample}
+                type="button"
+                className="chip"
+                onClick={() => setQuestion(sample)}
+                disabled={busy}
+              >
+                {sample}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={(event) => void send(question, event)} className="row">
+            <label>
+              问题
+              <input
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                disabled={busy}
+                placeholder="例如：这份资料里的 baseline 指标是多少？"
+                required
+              />
+            </label>
+            <button type="submit" disabled={busy}>
+              {busy ? "回答中…" : "发送"}
+            </button>
+          </form>
+        </>
       )}
     </section>
   );

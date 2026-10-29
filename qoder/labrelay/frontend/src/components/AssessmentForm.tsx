@@ -44,7 +44,7 @@ export function AssessmentForm({ projectId, disabled = false, onGenerated }: Pro
   }
 
   return (
-    <section className="card">
+    <section className="card" id="assessment">
       <h2>6. 新人测评与学习路径</h2>
       <form onSubmit={submit}>
         <label>

@@ -91,6 +91,14 @@ export default function App() {
             <small>Scope：{project.project_scope_id}</small>
           </section>
 
+          <nav className="steps" aria-label="工作台步骤">
+            <a href="#upload">2 上传资料</a>
+            <a href="#search">3 检索证据</a>
+            <a href="#questions">4 提问</a>
+            <a href="#handoff">5 交接</a>
+            <a href="#assessment">6 学习路径</a>
+          </nav>
+
           <UploadPanel projectId={project.id} onImported={setImportResult} />
 
           <details className="card advanced">

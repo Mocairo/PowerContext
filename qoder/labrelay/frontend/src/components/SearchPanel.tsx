@@ -28,7 +28,7 @@ export function SearchPanel({ projectId, disabled = false, onCompleted }: Props)
   }
 
   return (
-    <section className="card">
+    <section className="card" id="search">
       <h2>3. 检索证据</h2>
       <form onSubmit={search} className="row">
         <label>

@@ -231,3 +231,80 @@ pre {
   border-left: 3px solid #1f5eff;
   padding: 10px 12px;
 }
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 16px;
+}
+
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.steps a {
+  background: #fff;
+  border: 1px solid #dde3ec;
+  border-radius: 999px;
+  color: #1f5eff;
+  font-size: 14px;
+  padding: 6px 12px;
+  text-decoration: none;
+}
+
+.steps a:hover {
+  background: #eef3ff;
+}
+
+.chat {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 8px;
+}
+
+.chat-turn {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-question {
+  background: #1f5eff;
+  border-radius: 12px 12px 2px 12px;
+  color: #fff;
+  justify-self: end;
+  margin: 0;
+  max-width: 80%;
+  padding: 8px 12px;
+}
+
+.chat-answer {
+  background: #f7f9fc;
+  border: 1px solid #e2e8f2;
+  border-radius: 2px 12px 12px 12px;
+  max-width: 92%;
+  padding: 10px 12px;
+}
+
+.chat-answer .answer {
+  background: transparent;
+  border-left: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.sample-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+button.chip {
+  background: #fff;
+  border: 1px solid #c9d4e5;
+  color: #33415a;
+  font-size: 13px;
+  padding: 5px 10px;
+}

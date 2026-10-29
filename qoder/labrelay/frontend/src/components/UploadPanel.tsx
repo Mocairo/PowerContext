@@ -81,7 +81,7 @@ export function UploadPanel({ projectId, onImported }: Props) {
   }
 
   return (
-    <section className="card">
+    <section className="card" id="upload">
       <h2>2. 上传资料并分析</h2>
       <p className="muted">
         支持 Markdown、文本、PDF、代码、配置、CSV 等；单个文件 ≤ 10 MB，一次最多 {MAX_FILES}{" "}
