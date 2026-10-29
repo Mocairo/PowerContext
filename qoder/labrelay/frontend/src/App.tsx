@@ -78,7 +78,7 @@ export default function App() {
     <main>
       <header>
         <h1>LabRelay 科研接力</h1>
-        <p>把资料、交接和学习路径放在同一个可追溯闭环里。</p>
+        <p>上传你的资料，检查检索到的证据，再围绕资料提问；需要时继续做交接与学习路径。</p>
       </header>
 
       {!project ? (
