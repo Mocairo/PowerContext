@@ -204,20 +204,20 @@ class HandoffService:
             reason=f"handoff:{project.id}",
         )
         source_content = self._source_content(chosen)
-        source = await self.context.create_source(
+        await self.context.create_source(
             project.project_scope_id, CreateSourceRequest(content=source_content)
         )
         await self.context.create_contract(
             CreateWorkContractRequest(
                 scope_id=project.project_scope_id,
-                source_id=source.source_id,
+                source_id=f"handoff-contract:{project.id}:{uuid4().hex}",
                 contract=contract,
             )
         )
         prepared = await self.context.prepare_handoff(
             HandoffCurrentWorkRequest(
                 scope_id=project.project_scope_id,
-                source_id=source.source_id,
+                source_id=f"handoff-current:{project.id}:{uuid4().hex}",
                 handoff=current_work,
             )
         )
@@ -298,7 +298,7 @@ class HandoffService:
         project = await self._project(project_id)
         if not project.project_scope_id:
             raise HandoffNotReadyError("The project has no PowerContext project scope.")
-        source = await self.context.create_source(
+        await self.context.create_source(
             project.project_scope_id,
             CreateSourceRequest(content=request.model_dump(mode="json")),
         )
@@ -332,7 +332,7 @@ class HandoffService:
         return await self.context.record_outcome(
             RecordTaskOutcomeRequest(
                 scope_id=project.project_scope_id,
-                source_id=source.source_id,
+                source_id=f"task-outcome:{project.id}:{uuid4().hex}",
                 outcome=outcome,
             )
         )
