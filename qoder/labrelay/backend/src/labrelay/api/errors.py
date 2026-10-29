@@ -188,11 +188,15 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 async def model_unavailable_handler(request: Request, exc: ModelUnavailableError) -> Response:
     """A generated answer that the model could not produce is a dependency outage, not a 500."""
+    # ``ModelUnavailableError`` messages are fixed strings written in the gateway, never model
+    # output, so the reason can be logged without echoing a prompt or a completion.
     logger.warning(
-        "dependency failure operation=%s request_id=%s dependency=model exception_class=%s",
+        "dependency failure operation=%s request_id=%s dependency=model "
+        "exception_class=%s detail=%s",
         request.url.path,
         request_id_of(request),
         type(exc).__name__,
+        str(exc),
     )
     return error_response(
         request,
