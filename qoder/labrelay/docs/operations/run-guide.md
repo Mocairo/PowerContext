@@ -90,6 +90,61 @@ Makefile 里已用 `$(CURDIR)/backend/src` 修好这一条。
 
 > 上传接口与其他业务接口一样没有登录认证。后端只监听 `127.0.0.1`，**不要**用 `--host 0.0.0.0` 暴露到局域网或公网。
 
+### 3.2 接上 PowerContext（真实项目记忆）
+
+PowerContext 1.4.1 自带一个 **无模型** 的 SQLite 模板：不需要 seekdb、不需要生成/嵌入模型，也能提供 Scope、Memory 和 PreparedContext。本机实测可用。
+
+```bash
+# 只在第一次执行：生成配置（SQLite、127.0.0.1:8000、无推理提供方）
+cd qoder/labrelay
+uv sync --directory backend --extra dev --extra powercontext-server
+uv run --directory backend powercontext config init --template \
+  --output ../data/powercontext/.env --language en
+
+# 启动 PowerContext（前台，保持这个终端）
+uv run --directory backend powercontext server run --env-file ../data/powercontext/.env
+```
+
+再按下面的组合启动 LabRelay 后端，让检索用内存索引、上下文用真实 PowerContext：
+
+```bash
+PYTHONPATH="$(pwd)/backend/src" \
+LABRELAY_USE_FAKE_DEPS=1 \
+LABRELAY_CONTEXT=powercontext \
+LABRELAY_MODEL_PROVIDER=deterministic \
+uv run --directory backend uvicorn labrelay.api.main:create_default_app \
+  --factory --host 127.0.0.1 --port 8010
+```
+
+三个开关相互独立：
+
+| 变量 | 取值 | 说明 |
+| --- | --- | --- |
+| `LABRELAY_REPOSITORY` | `memory` / `seekdb` | 项目、资料、计划存哪里 |
+| `LABRELAY_CONTEXT` | `memory` / `powercontext` | 交接与问答上下文 |
+| `LABRELAY_MODEL_PROVIDER` | `deterministic` / `openai_compat` / `qoder` | 生成与嵌入模型 |
+
+问答面板会显示每次提问「自动检索了几段」「是否注入 PowerContext 上下文」「当前模型」。PowerContext 无模型模式只做词面匹配：项目创建、资料导入、交接和进度会写入项目记忆，问题与这些记忆相关时才会注入；没有匹配时显示“未使用上下文”，这是正常结果，不是接口失败。
+
+### 3.3 使用 Qoder 内置 Qwen3.8-Flash
+
+```bash
+# 在普通终端登录一次；不要把 PAT 贴到聊天或提交到仓库
+qodercli login
+```
+
+然后用 `LABRELAY_MODEL_PROVIDER=qoder` 重启后端（默认模型 `qwen3.8-flash`）：
+
+```bash
+PYTHONPATH="$(pwd)/backend/src" \
+LABRELAY_CONTEXT=powercontext \
+LABRELAY_MODEL_PROVIDER=qoder \
+uv run --directory backend uvicorn labrelay.api.main:create_default_app \
+  --factory --host 127.0.0.1 --port 8010
+```
+
+模型凭据优先级：`QODER_PERSONAL_ACCESS_TOKEN`（你自己的终端里设置）→ 本机 `qodercli` 登录态。未登录时问答返回 `503 dependency_unavailable`，details 里是 `dependency=model`，页面会提示登录，不会退回编造答案。也可以设置 `LABRELAY_MODEL_PROVIDER=openai_compat` 使用任意 OpenAI 兼容端点。
+
 ## 4. 真实栈
 
 ```bash
