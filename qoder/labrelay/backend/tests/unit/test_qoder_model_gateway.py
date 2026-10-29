@@ -28,8 +28,11 @@ async def test_generate_json_parses_fenced_json_and_uses_safe_options() -> None:
 
     assert result == {"headline": "baseline", "next_step": "check cache"}
     assert fake.options.model == "qwen3.8-flash"
-    assert fake.options.max_turns == 1
+    assert fake.options.max_turns == 4
     assert fake.options.tools == []
+    assert fake.options.setting_sources == []
+    assert fake.options.mcp_servers == {}
+    assert fake.options.strict_mcp_config is True
     assert fake.options.permission_mode == "dontAsk"
     assert "Bash" in fake.options.disallowed_tools
     assert "objective" in fake.prompt
@@ -76,3 +79,20 @@ async def test_duplicated_model_text_still_parses_the_first_object() -> None:
     result = await gateway.generate_json("Return JSON.", {"task": "test"})
 
     assert result == {"headline": "baseline", "next_step": "check cache"}
+
+
+async def test_top_level_task_array_is_folded_into_the_tasks_key() -> None:
+    gateway = QoderAgentModelGateway(query_func=FakeQuery('[{"stage": 0, "title": "x"}]'))
+
+    result = await gateway.generate_json("Return JSON.", {"stages": []})
+
+    assert result == {"tasks": [{"stage": 0, "title": "x"}]}
+
+
+async def test_concatenated_task_objects_are_folded_and_deduplicated() -> None:
+    text = '{"stage": 0, "title": "a"}{"stage": 0, "title": "a"}{"stage": 1, "title": "b"}'
+    gateway = QoderAgentModelGateway(query_func=FakeQuery(text))
+
+    result = await gateway.generate_json("Return JSON.", {"stages": []})
+
+    assert result == {"tasks": [{"stage": 0, "title": "a"}, {"stage": 1, "title": "b"}]}
