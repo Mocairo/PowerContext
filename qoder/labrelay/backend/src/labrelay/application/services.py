@@ -142,7 +142,8 @@ class LabRelayService:
         await self._remember(
             project.project_scope_id,
             DECISION_KIND,
-            f"项目 {project.title} 已创建，开始建立可追溯交接资料空间。",
+            f"项目《{project.title}》（{project.research_area}）已创建，目标：{project.description}。"
+            "开始建立可追溯交接资料空间。",
             reason="project initialization",
             project_id=project.id,
         )
@@ -158,7 +159,23 @@ class LabRelayService:
         project = await self.repository.get_project(project_id)
         if project is None:
             raise KeyError(project_id)
-        return await import_directory(self.repository, self.engine, project_id, source_path)
+        result = await import_directory(self.repository, self.engine, project_id, source_path)
+
+        # A short project note makes the imported material recoverable through PowerContext
+        # without copying chunk text into memory: titles and counts only, never content.
+        assets = await self.repository.list_assets(project.id)
+        active_titles = [asset.title for asset in assets if asset.status == "active"]
+        if active_titles:
+            shown = "、".join(active_titles[:8])
+            suffix = f" 等 {len(active_titles)} 项" if len(active_titles) > 8 else ""
+            await self._remember(
+                project.project_scope_id,
+                PROGRESS_KIND,
+                f"已导入资料：{shown}{suffix}；生成 {result['chunks']} 个检索片段。",
+                reason="import",
+                project_id=project.id,
+            )
+        return result
 
     async def search(
         self, project_id: str, query: str, kinds: list[str], limit: int = 12

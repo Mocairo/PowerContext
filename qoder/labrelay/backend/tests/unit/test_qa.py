@@ -67,3 +67,34 @@ async def test_question_route_refuses_unknown_project() -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "project_not_found"
+
+
+class FailingModel:
+    dimension = 2
+
+    def embed(self, texts):
+        return [[1.0, 0.0] for _ in texts]
+
+    async def generate_json(self, system_prompt, user_payload):
+        del system_prompt, user_payload
+        from labrelay.model.errors import ModelUnavailableError
+
+        raise ModelUnavailableError("not signed in")
+
+
+async def test_model_outage_is_a_503_not_an_internal_error() -> None:
+    service, project = await make_service(assets=[asset("note-1", "note")], model=FailingModel())
+    app = create_app_with_service(service)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/projects/{project.id}/questions", json={"question": "baseline 在哪？"}
+            )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "dependency_unavailable"
+    assert body["error"]["details"]["dependency"] == "model"

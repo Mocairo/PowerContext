@@ -16,6 +16,7 @@ dependencies = [
   "pyseekdb>=1.4,<2",
   "anyio>=4.4,<5",
   "python-multipart>=0.0.9,<1",
+  "qoder-agent-sdk>=1.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,10 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.24,<1",
   "ruff>=0.8,<1",
+]
+#: Run the real PowerContext Server locally (SQLite backend, model-free template).
+powercontext-server = [
+  "powercontext[cli,server]>=1.4.1,<2",
 ]
 
 [build-system]

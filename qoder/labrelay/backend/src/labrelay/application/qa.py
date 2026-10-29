@@ -22,6 +22,10 @@ SYSTEM_PROMPT = (
 class QaResponse(BaseModel):
     answer: str
     citations: list[Citation]
+    #: Hits the answer was allowed to use, whether or not the model cited them.
+    retrieved: list[Citation] = []
+    #: True when PowerContext supplied prepared context for this question.
+    context_used: bool = False
 
 
 async def answer_project_question(
@@ -39,8 +43,9 @@ async def answer_project_question(
         question,
         8000,
     )
+    retrieved = [hit.citation for hit in hits]
     if not hits and not context:
-        return QaResponse(answer="无法从项目资料确认。", citations=[])
+        return QaResponse(answer="无法从项目资料确认。", citations=[], retrieved=[])
 
     evidence = [hit.model_dump(mode="json") for hit in hits]
     response = await service.model.generate_json(
@@ -52,6 +57,8 @@ async def answer_project_question(
         return QaResponse(
             answer=str(response.get("answer") or "无法从项目资料确认。"),
             citations=[],
+            retrieved=retrieved,
+            context_used=bool(context),
         )
 
     allowed = {hit.citation.asset_id for hit in hits}
@@ -63,5 +70,12 @@ async def answer_project_question(
         return QaResponse(
             answer="项目资料不足以确认该回答涉及的具体来源。",
             citations=[],
+            retrieved=retrieved,
+            context_used=bool(context),
         )
-    return QaResponse(answer=str(response["answer"]), citations=citations)
+    return QaResponse(
+        answer=str(response["answer"]),
+        citations=citations,
+        retrieved=retrieved,
+        context_used=bool(context),
+    )

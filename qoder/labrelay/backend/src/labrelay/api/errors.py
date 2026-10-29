@@ -27,6 +27,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
+from labrelay.model.errors import ModelUnavailableError
+
 REQUEST_ID_HEADER = "X-LabRelay-Request-Id"
 REQUEST_ID_PREFIX = "request-"
 
@@ -184,8 +186,26 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
+async def model_unavailable_handler(request: Request, exc: ModelUnavailableError) -> Response:
+    """A generated answer that the model could not produce is a dependency outage, not a 500."""
+    logger.warning(
+        "dependency failure operation=%s request_id=%s dependency=model exception_class=%s",
+        request.url.path,
+        request_id_of(request),
+        type(exc).__name__,
+    )
+    return error_response(
+        request,
+        503,
+        DEPENDENCY_UNAVAILABLE,
+        "The configured model is unavailable. Check the provider settings or sign in again.",
+        {"dependency": "model"},
+    )
+
+
 def configure_error_surface(app: FastAPI) -> None:
     """Attaches the identifier middleware and the envelope handlers to ``app``."""
     app.add_middleware(RequestIdMiddleware)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ModelUnavailableError, model_unavailable_handler)
