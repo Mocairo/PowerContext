@@ -1,0 +1,39 @@
+# Aurora baseline 实验配置（复现历史指标所用的唯一配置）
+#
+# 这份配置产出 `experiments/metrics_baseline.md` 里的历史指标。
+# 改动其中任何一项都需要重新登记实验，不能直接覆盖本文件。
+
+project: aurora-anomaly-detection
+experiment_name: baseline_v3_seed2026
+
+data:
+  # 数据位置：共享存储上的只读快照，见 ops/lab_server_resources.md
+  root: /data/aurora
+  version: v3
+  train_ratio: 0.8
+  val_ratio: 0.2
+  # 已知问题：v3 之前遗留的 cache 目录会改变采样顺序，训练前必须确认缓存为空
+  require_clean_cache: true
+
+training:
+  entry: code/train.py
+  learning_rate: 3.0e-4
+  batch_size: 128
+  epochs: 40
+  # 随机种子固定为 2026；换种子属于「下一项未完成工作」，见 notes/handoff.md
+  seed: 2026
+  optimizer: adamw
+  weight_decay: 0.01
+
+evaluation:
+  entry: code/evaluate.py
+  threshold: 0.5
+  metrics:
+    - auroc
+    - f1
+
+environment:
+  python: "3.11"
+  # 环境安装步骤写在 ops/lab_server_resources.md，依赖用 uv 锁定
+  dependency_manager: uv
+  device: cuda:0
